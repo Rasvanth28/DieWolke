@@ -1,0 +1,13 @@
+.venv/
+experiments/path/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+
+# SEN12MS-CR data and experiment outputs
+datasets/data/
+*.tar.gz
+*.tif
+*.npy
+*.pt
+mask_ablation_out/
