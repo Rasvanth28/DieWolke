@@ -1,0 +1,72 @@
+# Shared defaults. Every other config starts from this file (`base: base.yaml`).
+# Paths are for Google Colab; override with --set key=value.
+
+data:
+  root: /content/data/sen12ms_cr          # extracted SEN12MS-CR (any seasons)
+  cache: /content/cache                   # local disk; ~4 MB per patch
+  split: official                         # official SEN12MS-CR test/val scenes | random
+  seed: 0
+  n_train: 3000                           # patches cached for training (null = all; ~4 MB each)
+  n_val: 300
+  n_test: null                            # full test split
+  crop: 128                               # training crop; eval uses full 256 x 256 patches
+  eval_crop: null
+  mode: real                              # real | synthetic | mixed (training pairs)
+  val_mode: real
+  p_synth: 0.5                            # share of synthetic clouds when mode = mixed
+  max_target_cloud: 0.05                  # skip training pairs whose "clear" target is cloudy
+  use_shadow: true                        # add the shadow heuristic to real-pair masks
+
+model:
+  type: bridge
+  base: 48
+  mults: [1, 2, 4, 4]
+  blocks: 2
+  attn_levels: [2, 3]                     # attention at 1/4 and 1/8 resolution
+  sar_ch: 64
+  heads: 4
+  dropout: 0.0
+  use_bga: true                           # C1 band-group attention
+  uncertainty: true                       # C3 aleatoric uncertainty head
+  use_mask: true
+  residual: cond                          # mean = condition + predicted residual (xt | cond | none)
+  mask_source: data                       # data (s2cloudless/exact) | masker (Stage 1) | none
+  cond: masked                            # masked: cloudy S2 with masked pixels zeroed | cloudy
+
+bridge:
+  sigma: 0.5
+  t_min: 0.001
+  p_t1: 0.25                              # share of training steps at t = 1 (single-step regime)
+  source: cloudy                          # bridge endpoint y: cloudy | masked
+
+loss:
+  cloud_weight: 1.0                       # >1 up-weights masked pixels
+  ndvi: 0.1                               # C2 NDVI-consistency weight (0 = off)
+  indices: [ndvi]
+  uncertainty: 0.05                       # C3 Laplace NLL weight (0 = off)
+
+train:
+  out_dir: /content/drive/MyDrive/dieWolke/runs
+  steps: 60000
+  batch: 8
+  accum: 1
+  lr: 2.0e-4
+  min_lr_frac: 0.05
+  warmup: 1000
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  ema: 0.999
+  amp: true
+  workers: 2
+  log_every: 100
+  val_every: 2000
+  val_batches: 25
+  val_batch: 8
+  ckpt_every: 500
+  max_minutes: null                       # e.g. 200 to stop cleanly inside a Colab session
+  seed: 0
+
+eval:
+  steps: 1                                # bridge sampling steps (1 = single-step)
+  eta: 0.0                                # 0 deterministic; > 0 stochastic (needed for sample spread)
+  n_samples: 1

@@ -1,0 +1,7 @@
+# C5 with the real model: the full model fed Stage 1 masker predictions instead of s2cloudless.
+# Train the masker first (configs/masker.yaml) and point masker_ckpt at its run directory.
+base: base.yaml
+name: two_stage
+model:
+  mask_source: masker
+  masker_ckpt: /content/drive/MyDrive/dieWolke/runs/masker

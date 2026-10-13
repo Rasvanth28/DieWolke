@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diewolke"
+version = "0.1.0"
+description = "SAR-conditioned diffusion-bridge cloud removal for all 13 Sentinel-2 bands"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "numpy",
+    "scipy",
+    "pyyaml",
+    "rasterio",
+    "matplotlib",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+clouds = ["s2cloudless"]
+baselines = ["xgboost>=2.0"]
+kharif = ["earthengine-api", "pyproj", "xgboost>=2.0"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["diewolke*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "kharif", "tests"]

@@ -1,0 +1,7 @@
+# Ablation: no uncertainty head (C3 off).
+base: base.yaml
+name: no_unc
+model:
+  uncertainty: false
+loss:
+  uncertainty: 0.0

@@ -1,0 +1,3 @@
+# Full model: band-group attention (C1) + NDVI loss (C2) + uncertainty head (C3).
+base: base.yaml
+name: full

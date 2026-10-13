@@ -11,3 +11,10 @@ datasets/data/
 *.npy
 *.pt
 mask_ablation_out/
+
+# training runs and evaluation outputs (keep these on Drive, not in git)
+runs/
+runs_*/
+eval/
+*.egg-info/
+.pytest_cache/

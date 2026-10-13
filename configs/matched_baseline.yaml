@@ -1,0 +1,9 @@
+# Matched baseline: the same bridge model with C1-C3 all removed (the fair DB-CR stand-in).
+base: base.yaml
+name: matched_baseline
+model:
+  use_bga: false
+  uncertainty: false
+loss:
+  ndvi: 0.0
+  uncertainty: 0.0
