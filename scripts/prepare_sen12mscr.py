@@ -1,6 +1,7 @@
 """Get SEN12MS-CR onto a Colab VM and build the .npy caches. Replaces datasets/VisuzalizeDataset.py.
 
-    # 1. archives -> Drive (once; resumable). The base URL is the FTP/HTTP folder from the
+    # 1. archives -> Drive (once; resumable). SEN12MSCR_URL is the archive folder URL, or a template
+    #    with {name} in place of the archive name (see archive_url). It comes from the
     #    SEN12MS-CR page on mediaTUM (https://mediatum.ub.tum.de/1554803); pass it, do not commit it.
     python scripts/prepare_sen12mscr.py download --base_url "$SEN12MSCR_URL" --drive /content/drive/MyDrive/sen12ms_cr
     # 2. Drive -> local disk (every new Colab session)
@@ -22,6 +23,13 @@ MODALITIES = ["s1", "s2", "s2_cloudy"]
 MIN_BYTES = 100 * 1024 * 1024  # anything smaller is a failed download
 
 
+def archive_url(base, name):
+    """Download URL for one archive. `base` is either a folder URL (the name is appended) or a
+    template containing {name}, for servers whose links put the file name in a query string, e.g.
+    https://dataserv.ub.tum.de/index.php/s/<share>/download?path=%2F&files={name}"""
+    return base.format(name=name) if "{name}" in base else f"{base.rstrip('/')}/{name}"
+
+
 def archives(seasons):
     return [f"{SEASONS[s]}_{m}.tar.gz" for s in seasons for m in MODALITIES]
 
@@ -38,7 +46,7 @@ def download(args):
             print(f"[=] {name} present ({dst.stat().st_size / 1e9:.1f} GB)")
             continue
         print(f"[+] downloading {name}")
-        subprocess.run(["wget", "-c", "-q", "--show-progress", "-O", str(dst), f"{base.rstrip('/')}/{name}"], check=True)
+        subprocess.run(["wget", "-c", "-q", "--show-progress", "-O", str(dst), archive_url(base, name)], check=True)
 
 
 def extract(args):

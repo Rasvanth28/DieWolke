@@ -28,9 +28,9 @@ used below.
 | C4 Kharif benchmark + downstream classification | `kharif/` | `kharif/kharif.yaml` |
 | C5 separate mask vs. end-to-end | `experiments/mask_ablation.py` (quick U-Net version); `two_stage.yaml` / `end_to_end.yaml` (real model) | `model.mask_source` |
 | Matched baseline (C1–C3 all off) | same model | `matched_baseline.yaml` |
-| DSen2-CR-style baseline (CARL loss) | `diewolke/models/dsen2cr.py` | `dsen2cr.yaml` |
+| DSen2-CR-style baseline (CARL loss), optional now that published models are scored | `diewolke/models/dsen2cr.py` | `dsen2cr.yaml` |
 | Classical XGBoost SAR-regression gap filling | `baselines/xgb_reconstruct.py` | |
-| GLF-CR, UnCRtainTS | their public code, scored with `evaluate.py --preds` | `baselines/external.md` |
+| GLF-CR, UnCRtainTS (authors' pretrained weights, inference only) | `baselines/run_external.py` → `evaluate.py --preds` | `baselines/external.md` |
 | Stage 3 temporal conditioning | not implemented; postponed in NOVELTY.md | |
 
 ## Quick start
@@ -41,7 +41,7 @@ python -m pytest -q                                   # ~30 tests on fake GeoTIF
 python -m diewolke.train --config configs/smoke.yaml  # random-data training run
 ```
 
-Real work happens on Colab. Open [`notebooks/colab_runbook.ipynb`](notebooks/colab_runbook.ipynb)
+Real work happens on a GPU machine (any Linux box, Colab, or Kaggle via [`kaggle/`](kaggle/README.md)). On Colab, open [`notebooks/colab_runbook.ipynb`](notebooks/colab_runbook.ipynb)
 and run it top to bottom: setup, data, timing check, masker, the full model and ablations,
 evaluation, baselines, then Kharif. Every training cell resumes from its last checkpoint on
 Drive, and `train.max_minutes` ends a session cleanly before Colab's limits.
@@ -110,6 +110,42 @@ loading keeps up. The masker takes well under an hour. Measure with the notebook
 before planning sessions. Caches take ~4 MB per patch, so the default 3000 training patches use
 ~12 GB of local disk.
 
+## Making training faster
+
+Measure first. `scripts/benchmark_speed.py` trains scratch copies for 300 steps under fp16, bf16,
+bf16 + compile and bf16 + compile + channels_last (or any `--try` you give), and prints seconds per
+step, the share of time spent waiting for data, and the projected time of a full run:
+
+```
+python scripts/benchmark_speed.py --config configs/full.yaml --set data.root=... data.cache=... train.workers=6
+```
+
+| Setting | What it does | Default |
+|---|---|---|
+| `train.precision=bf16` | bf16 autocast, no loss scaling (Ampere+, e.g. RTX A4000; the T4 needs fp16) | fp16 |
+| `train.compile=true` | `torch.compile` of the training model (Linux/WSL2; first steps take 1-3 min to compile) | off |
+| `train.channels_last=true` | NHWC memory layout for convolutions; sometimes faster, sometimes not with GroupNorm | off |
+| `train.cudnn_benchmark`, `train.tf32` | fastest conv kernels for the fixed crop size; TF32 for fp32 matmuls | on |
+| `train.fused_adam` | fused AdamW kernel | on |
+| `train.stop_at=N` | pause at step N without changing the learning-rate schedule; rerun to continue | off |
+
+Ctrl+C saves a checkpoint before exiting; rerunning the same command resumes. Training time is set by
+`train.steps` (x seconds per step), not by the dataset size.
+
+**Is data loading the bottleneck?** Every log line has `data_wait`: the share of each step spent
+waiting for the next batch. The trainer warns above 20 %. Fixes: raise `train.workers` (one per
+spare CPU core, typically 4-8), keep the cache on an SSD/NVMe, and keep the training cache smaller
+than RAM (`data.n_train`; ~4 MB per patch).
+
+**Do CPU work while the GPU trains.** `train.py` only needs the train/val caches, so these can run
+in a second terminal at the same time (they slow the data loader a little; watch `data_wait`):
+
+```
+python scripts/prepare_sen12mscr.py cache --config configs/full.yaml --set data.root=... data.cache=... --splits test
+python baselines/xgb_reconstruct.py --cache ... --split test --mode real --out EVAL/pred_xgb_real.npy
+python kharif/find_scenes.py && python kharif/export_patches.py      # network-bound
+```
+
 ## Reporting caveats
 
 - **SEN12MS-CR comparability.** DB-CR Table I uses all four seasons. Spring-only results
@@ -118,6 +154,8 @@ before planning sessions. Caches take ~4 MB per patch, so the default 3000 train
 - **Real-cloud evaluation.** The target is a different date and the mask is estimated. Use the
   synthetic-cloud evaluation for exact-ground-truth claims, and report the gap between the two
   (NOVELTY.md ablation 3).
+- **Published baselines.** UnCRtainTS and GLF-CR are scored with their authors' weights, which
+  were trained with their own settings (likely all four seasons). Say so next to their numbers.
 - **Re-implementations.** The DSen2-CR model here is a smaller re-implementation, so don't
   attach the paper's numbers to it. The XGBoost baseline is our approximation of classical
   reconstruction, not Gupta & Verma's exact method.
@@ -131,11 +169,12 @@ before planning sessions. Caches take ~4 MB per patch, so the default 3000 train
 diewolke/        package: bands, data/, models/, bridge, losses, metrics, calibration,
                  engine, train, evaluate, compare, predict, config, utils
 configs/         base.yaml + one file per run (full, ablations, baselines, masker, smoke)
-baselines/       xgb_reconstruct.py, external.md (GLF-CR / UnCRtainTS)
+baselines/       xgb_reconstruct.py, run_external.py (+ kernelconv2d_torch.py), external.md
 kharif/          Earth Engine scene search, patch export, benchmark build, crop classification
 experiments/     mask_ablation.py (+ notebook wrapper)
 scripts/         prepare_sen12mscr.py, visualize_samples.py
 notebooks/       colab_runbook.ipynb
+kaggle/          Kaggle notebooks (prepare, train, evaluate), kaggle_tools.py, kaggle.yaml overlay
 tests/           pytest suite on fake GeoTIFFs
 datasets/        original exploration notebooks (superseded by scripts/; kept for reference)
 ```

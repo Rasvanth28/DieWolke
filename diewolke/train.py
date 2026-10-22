@@ -76,23 +76,41 @@ def run(cfg):
 
     if len(train_loader) == 0:
         raise SystemExit(f"training set ({len(train_loader.dataset)} samples) is smaller than one batch")
+    # speed switches (train.cudnn_benchmark, train.tf32, train.precision, train.channels_last, train.compile)
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = t_cfg.get("cudnn_benchmark", True)  # fixed crop size -> pick fastest conv kernels
+        if t_cfg.get("tf32", True):  # Ampere+: TF32 for the fp32 parts (A4000 yes, T4 ignores it)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+    channels_last = bool(t_cfg.get("channels_last", False))
     model = build_model(cfg).to(device)
-    pipe = Pipeline(cfg, model, device=device)
+    if channels_last:
+        model = model.to(memory_format=torch.channels_last)
     n_params = count_parameters(model)
     print(f"[+] {cfg['model']['type']} with {n_params / 1e6:.2f}M parameters; "
           f"{len(train_loader.dataset)} train / {len(val_loader.dataset)} val samples")
+    # fused AdamW: one CUDA kernel for the whole update (same maths, less launch overhead)
     opt = torch.optim.AdamW(model.parameters(), lr=t_cfg["lr"], weight_decay=t_cfg.get("weight_decay", 1e-4),
-                            betas=(0.9, 0.99))
-    amp = device.type == "cuda" and t_cfg.get("amp", True)
-    scaler = torch.amp.GradScaler(device.type, enabled=amp)
+                            betas=(0.9, 0.99), fused=device.type == "cuda" and t_cfg.get("fused_adam", True))
+    precision = t_cfg.get("precision", "fp16") if t_cfg.get("amp", True) else "fp32"
+    amp = device.type == "cuda" and precision in ("fp16", "bf16")
+    amp_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+    # bf16 has fp32's range, so it needs no loss scaling (Ampere and newer, e.g. the A4000; not the T4)
+    scaler = torch.amp.GradScaler(device.type, enabled=amp and precision == "fp16")
     ema = EMA(model, t_cfg.get("ema", 0.999)) if t_cfg.get("ema", 0.999) else None
+    # torch.compile wraps the model for training only; checkpoints and EMA keep the plain module
+    train_model = torch.compile(model) if t_cfg.get("compile", False) else model
+    pipe = Pipeline(cfg, train_model, device=device)
+    print(f"[+] precision {precision if amp else 'fp32'}, channels_last {channels_last}, "
+          f"compile {bool(t_cfg.get('compile', False))}")
 
     step, best = 0, -float("inf")
     if (out / "last.pt").exists() and not t_cfg.get("restart", False):
         st = load_checkpoint(out / "last.pt", device)
         model.load_state_dict(st["model"])
         opt.load_state_dict(st["opt"])
-        scaler.load_state_dict(st["scaler"])
+        if scaler.is_enabled() and st.get("scaler"):  # also lets a run switch between fp16 and bf16
+            scaler.load_state_dict(st["scaler"])
         if ema is not None and st.get("ema") is not None:
             ema.shadow.load_state_dict(st["ema"])
         step, best = st["step"], st.get("best", best)
@@ -101,67 +119,94 @@ def run(cfg):
     logger = CSVLogger(out / "log.csv")
 
     def checkpoint(name):
-        save_checkpoint(out / name, model=model.state_dict(), opt=opt.state_dict(), scaler=scaler.state_dict(),
-                        ema=ema.shadow.state_dict() if ema else None, step=step, best=best, config=cfg,
-                        n_params=n_params)
+        # best.pt is for evaluation only, so it skips the optimizer state (about half the file size;
+        # matters where output space is limited, e.g. Kaggle). Resuming always uses last.pt.
+        extra = {} if name == "best.pt" else {"opt": opt.state_dict(), "scaler": scaler.state_dict()}
+        save_checkpoint(out / name, model=model.state_dict(), ema=ema.shadow.state_dict() if ema else None,
+                        step=step, best=best, config=cfg, n_params=n_params, **extra)
 
     accum = t_cfg.get("accum", 1)
+    # pause at this step; the learning-rate schedule still runs over train.steps
+    stop_at = min(t_cfg.get("stop_at") or t_cfg["steps"], t_cfg["steps"])
     timer, t_last, running = Timer(), time.time(), {}
+    # time spent waiting for the next batch (CPU data loading) vs. the whole step; float(loss) below
+    # synchronises with the GPU every step, so the split is accurate
+    wait, t_ready = 0.0, time.time()
     model.train()
     stop = False
-    while step < t_cfg["steps"] and not stop:
-        for b in train_loader:
-            b = {k: v.to(device, non_blocking=True) for k, v in b.items()}
-            for g in opt.param_groups:
-                g["lr"] = lr_at(step, t_cfg)
-            with torch.autocast(device.type, dtype=torch.float16, enabled=amp):
-                loss, terms = pipe.training_loss(b)
-            scaler.scale(loss / accum).backward()
-            if (step + 1) % accum == 0:
-                scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), t_cfg.get("grad_clip", 1.0))
-                scaler.step(opt)
-                scaler.update()
-                opt.zero_grad(set_to_none=True)
-                if ema is not None:
-                    ema.update(model, step)
-            step += 1
-            for k, v in {"loss": float(loss.detach()), **terms}.items():
-                running[k] = running.get(k, 0.0) + v
-            every = t_cfg.get("log_every", 100)
-            if step % every == 0 or step == t_cfg["steps"]:
-                n = step % every or every
-                sec = (time.time() - t_last) / n
-                t_last = time.time()
-                row = {"step": step, "lr": opt.param_groups[0]["lr"], "sec_per_step": sec,
-                       **{k: v / n for k, v in running.items()}}
-                running = {}
-                eta_min = sec * (t_cfg["steps"] - step) / 60
-                print(f"  step {step}/{t_cfg['steps']} " + " ".join(f"{k} {v:.4f}" for k, v in row.items()
-                                                                    if k not in ("step",)) + f" | ~{eta_min:.0f} min left",
-                      flush=True)
-                logger.log(row)
-            if step % t_cfg.get("val_every", 1000) == 0 or step == t_cfg["steps"]:
-                eval_pipe = Pipeline(cfg, ema.shadow if ema else model, masker=pipe.masker, device=device)
-                res = validate(eval_pipe, val_loader, device, t_cfg.get("val_batches", 25))
-                improved = res["score"] > best
-                best = max(best, res["score"])
-                print("  [val] " + " ".join(f"{k} {v:.4f}" for k, v in res.items()) + (" *" if improved else ""))
-                logger.log({"step": step, **res})
-                checkpoint("last.pt")
-                if improved:
-                    checkpoint("best.pt")
-            elif step % t_cfg.get("ckpt_every", 500) == 0:
-                checkpoint("last.pt")
-            if t_cfg.get("max_minutes") and timer.minutes() > t_cfg["max_minutes"]:
-                print(f"[!] max_minutes reached at step {step}; checkpoint saved, rerun to resume")
-                stop = True
-            if step >= t_cfg["steps"] or stop:
-                break
+
+    def to_device(v):
+        if channels_last and v.dim() == 4:
+            return v.to(device, non_blocking=True, memory_format=torch.channels_last)
+        return v.to(device, non_blocking=True)
+
+    interrupted = False
+    try:
+        while step < stop_at and not stop:
+            for b in train_loader:
+                wait += time.time() - t_ready
+                b = {k: to_device(v) for k, v in b.items()}
+                for g in opt.param_groups:
+                    g["lr"] = lr_at(step, t_cfg)
+                with torch.autocast(device.type, dtype=amp_dtype, enabled=amp):
+                    loss, terms = pipe.training_loss(b)
+                scaler.scale(loss / accum).backward()
+                if (step + 1) % accum == 0:
+                    scaler.unscale_(opt)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), t_cfg.get("grad_clip", 1.0))
+                    scaler.step(opt)
+                    scaler.update()
+                    opt.zero_grad(set_to_none=True)
+                    if ema is not None:
+                        ema.update(model, step)
+                step += 1
+                for k, v in {"loss": float(loss.detach()), **terms}.items():
+                    running[k] = running.get(k, 0.0) + v
+                every = t_cfg.get("log_every", 100)
+                if step % every == 0 or step == stop_at:
+                    n = step % every or every
+                    sec = (time.time() - t_last) / n
+                    t_last = time.time()
+                    data_wait = min(1.0, wait / max(1e-9, sec * n))
+                    wait = 0.0
+                    row = {"step": step, "lr": opt.param_groups[0]["lr"], "sec_per_step": sec, "data_wait": data_wait,
+                           **{k: v / n for k, v in running.items()}}
+                    running = {}
+                    eta_min = sec * (stop_at - step) / 60
+                    print(f"  step {step}/{t_cfg['steps']} " + " ".join(f"{k} {v:.4f}" for k, v in row.items()
+                                                                        if k != "step") + f" | ~{eta_min:.0f} min left",
+                          flush=True)
+                    if data_wait > 0.2 and step > 2 * every:
+                        print(f"  [!] {100 * data_wait:.0f}% of each step is spent waiting for data; "
+                              "raise train.workers or keep the cache on a faster disk / in RAM")
+                    logger.log(row)
+                if step % t_cfg.get("val_every", 1000) == 0 or step == t_cfg["steps"]:
+                    eval_pipe = Pipeline(cfg, ema.shadow if ema else model, masker=pipe.masker, device=device)
+                    res = validate(eval_pipe, val_loader, device, t_cfg.get("val_batches", 25))
+                    improved = res["score"] > best
+                    best = max(best, res["score"])
+                    print("  [val] " + " ".join(f"{k} {v:.4f}" for k, v in res.items()) + (" *" if improved else ""))
+                    logger.log({"step": step, **res})
+                    checkpoint("last.pt")
+                    if improved:
+                        checkpoint("best.pt")
+                elif step % t_cfg.get("ckpt_every", 500) == 0:
+                    checkpoint("last.pt")
+                if t_cfg.get("max_minutes") and timer.minutes() > t_cfg["max_minutes"]:
+                    print(f"[!] max_minutes reached at step {step}; checkpoint saved, rerun to resume")
+                    stop = True
+                t_ready = time.time()  # validation/checkpoint time is not counted as data wait
+                if step >= stop_at or stop:
+                    break
+    except KeyboardInterrupt:
+        interrupted = True
+        print(f"\n[!] interrupted at step {step}; saving a checkpoint, rerun the same command to resume")
     checkpoint("last.pt")
     if not (out / "best.pt").exists():
         checkpoint("best.pt")
-    print(f"[+] done: step {step}, best val score {best:.4f}, {timer.minutes():.1f} min this session")
+    if step < t_cfg["steps"] and not interrupted and not stop:
+        print(f"[+] paused at train.stop_at={stop_at}; rerun without stop_at (or with a later one) to continue")
+    print(f"[+] done: step {step}/{t_cfg['steps']}, best val score {best:.4f}, {timer.minutes():.1f} min this session")
     return out
 
 
@@ -169,8 +214,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True)
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE", help="config overrides")
+    ap.add_argument("--overlay", action="append", default=[], help="platform config merged over --config "
+                                                                   "(e.g. kaggle/kaggle.yaml); repeatable")
     args = ap.parse_args(argv)
-    return run(load_config(args.config, args.set))
+    return run(load_config(args.config, args.set, args.overlay))
 
 
 if __name__ == "__main__":

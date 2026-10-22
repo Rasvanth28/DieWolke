@@ -164,8 +164,16 @@ def build_cache(items, cache_dir, split, chunk=64, verbose=True):
         for a in arrays.values():
             a.flush()
         (cache_dir / f"{split}_keys.json").write_text(json.dumps([patch_id(k) for k, _ in items]))
-        done.touch()
+        done.write_text(json.dumps({"n": n}))  # non-empty: some uploaders drop empty files
     return Cache.load(cache_dir, split)
+
+
+def cache_ready(cache_dir, split):
+    """A split is ready if its marker exists, or (marker lost in a copy/upload) all its arrays do."""
+    cache_dir = Path(cache_dir)
+    if (cache_dir / f"{split}.done").exists():
+        return True
+    return all((cache_dir / f"{split}_{k}.npy").exists() for k in CACHE_FIELDS)
 
 
 class Cache(dict):
@@ -225,7 +233,7 @@ def prepare_caches(cfg, splits=("train", "val", "test"), verbose=True):
     cache_dir = Path(d["cache"])
     info = {k: d.get(k) for k in ("split", "seed", "n_train", "n_val", "n_test")}
     info_file = cache_dir / "cache_info.json"
-    if all((cache_dir / f"{s}.done").exists() for s in splits):
+    if all(cache_ready(cache_dir, s) for s in splits):
         if info_file.exists() and json.loads(info_file.read_text()) != info:
             print(f"[!] {cache_dir} was built with {info_file.read_text()}, config asks for {info}; "
                   "using the existing cache (delete it to rebuild)")

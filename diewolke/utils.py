@@ -34,8 +34,9 @@ class EMA:
     @torch.no_grad()
     def update(self, model, step=None):
         d = self.decay if step is None else min(self.decay, (1 + step) / (10 + step))
-        for s, p in zip(self.shadow.parameters(), model.parameters()):
-            s.lerp_(p.detach(), 1 - d)
+        shadow = list(self.shadow.parameters())
+        params = [p.detach() for p in model.parameters()]
+        torch._foreach_lerp_(shadow, params, 1 - d)  # one fused launch instead of one per tensor
         for s, b in zip(self.shadow.buffers(), model.buffers()):
             s.copy_(b)
 

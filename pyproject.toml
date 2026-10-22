@@ -21,6 +21,7 @@ dependencies = [
 clouds = ["s2cloudless"]
 baselines = ["xgboost>=2.0"]
 kharif = ["earthengine-api", "pyproj", "xgboost>=2.0"]
+external = ["fvcore", "timm"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

@@ -51,8 +51,9 @@ Colab via `notebooks/colab_runbook.ipynb`.
   plus CARL and the masker loss.
 - `diewolke/engine.py`: `Pipeline` covers the mask source (data | masker | none), the condition,
   training loss and `predict()`. `load_run()` loads a run directory, using EMA weights.
-- `diewolke/train.py`: resumable trainer (last.pt/best.pt on Drive, atomic saves,
-  `train.max_minutes`).
+- `diewolke/train.py`: resumable trainer (last.pt/best.pt, atomic saves, `train.max_minutes`,
+  `train.stop_at`, checkpoint on Ctrl+C) with speed switches (precision fp16/bf16, compile,
+  channels_last, cudnn benchmark, TF32, fused AdamW); see README "Making training faster".
 - `diewolke/evaluate.py`: Stage 4 harness. Covers per-image metrics, per-band errors, bootstrap
   CIs, paired differences, uncertainty calibration (temperature fitted on val), the
   uncertainty-filtered NDVI, and `--preds` for external predictions.
@@ -60,7 +61,15 @@ Colab via `notebooks/colab_runbook.ipynb`.
 - `configs/`: `base.yaml` plus one file per run: full, matched_baseline, no_bga, no_ndvi,
   no_unc, two_stage, end_to_end, masker, dsen2cr, smoke. Overrides use `--set a.b=value`.
 - `baselines/xgb_reconstruct.py`: classical SAR→S2 gradient-boosting gap filling.
-  `baselines/external.md` covers GLF-CR and UnCRtainTS.
+  `baselines/run_external.py` runs the authors' pretrained UnCRtainTS / GLF-CR on a cached split and
+  saves cache-ordered predictions for `evaluate.py --preds` (`baselines/external.md`). GLF-CR's
+  compiled CUDA layer is replaced by `baselines/kernelconv2d_torch.py`. The GLF-CR repo has no
+  licence, so never copy its code here; import it from a clone.
+- `scripts/benchmark_speed.py`: compares speed settings; training logs report `data_wait`.
+- `kaggle/`: Kaggle notebooks plus `kaggle_tools.py` (env, find-cache, restore across sessions, a
+  time-budgeted run queue over one or two GPUs, prepare, publish) and the `kaggle.yaml` overlay
+  (`train.py --overlay`). Configs accept overlays; `best.pt` is weights-only; a cache split counts
+  as ready if its arrays exist even without the `.done` marker.
 - `kharif/`: Earth Engine scene search → patch export → benchmark build → crop
   classification. See `kharif/README.md`.
 - `experiments/mask_ablation.py`: standalone quick C5 ablation with plain U-Nets. Its notebook

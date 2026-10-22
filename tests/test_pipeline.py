@@ -70,6 +70,20 @@ def test_training_runs_and_resumes(setup, config):
     assert st["step"] == 4
 
 
+def test_stop_at_pauses_and_speed_switches_run(setup):
+    from diewolke.train import run
+    tmp, over = setup
+    small = ["model.base=16", "model.sar_ch=16", "model.heads=2", "train.batch=2", "train.workers=0",
+             "train.val_every=100", "train.val_batches=1", "train.log_every=1", "train.amp=false",
+             "train.warmup=1", "train.val_batch=2", "train.steps=6", "train.channels_last=true", "name=pause"]
+    cfg = load_config("configs/full.yaml", over + small + ["train.stop_at=3"])
+    out = run(cfg)
+    assert torch.load(out / "last.pt", weights_only=False)["step"] == 3
+    cfg["train"]["stop_at"] = None
+    run(cfg)
+    assert torch.load(out / "last.pt", weights_only=False)["step"] == 6
+
+
 def test_two_stage_uses_the_trained_masker(setup):
     from diewolke.engine import Pipeline
     from diewolke.train import run
@@ -100,6 +114,10 @@ def test_evaluate_predict_and_xgb(setup, sen12_root):
     evaluate.main(["--runs", str(runs / "smoke"), str(runs / "dsen2cr"), "--preds", f"xgb={xgb}",
                    "--cache", str(tmp / "cache"), "--split", "test", "--workers", "0", "--batch", "2",
                    "--save_predictions", "--out", str(ev)])
+    evaluate.main(["--runs", str(runs / "smoke"), "--masker", str(runs / "masker"), "--mask_source", "masker",
+                   "--cache", str(tmp / "cache"), "--split", "test", "--workers", "0", "--batch", "2",
+                   "--calibrate_on", "", "--out", str(ev / "masker_masks")])
+    assert "smoke+masker_mask" in json.loads((ev / "masker_masks" / "summary.json").read_text())
     summary = json.loads((ev / "summary.json").read_text())
     assert {"input", "smoke", "dsen2cr", "xgb"} <= set(summary)
     assert summary["smoke"]["uncertainty"]["temperature"] is not None

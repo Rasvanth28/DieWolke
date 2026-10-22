@@ -64,7 +64,15 @@ train:
   val_batch: 8
   ckpt_every: 500
   max_minutes: null                       # e.g. 200 to stop cleanly inside a Colab session
+  stop_at: null                           # pause at this step without changing the LR schedule
   seed: 0
+  # speed (see README "Making training faster"); measure each with the 200-step timing run
+  precision: fp16                         # fp16 | bf16 (Ampere+, e.g. RTX A4000; not the T4) | fp32
+  cudnn_benchmark: true
+  tf32: true
+  channels_last: false
+  compile: false                          # torch.compile; easiest on Linux / WSL2
+  fused_adam: true                        # fused AdamW kernel on CUDA
 
 eval:
   steps: 1                                # bridge sampling steps (1 = single-step)

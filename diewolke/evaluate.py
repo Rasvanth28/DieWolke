@@ -203,6 +203,9 @@ def main(argv=None):
     ap.add_argument("--eta", type=float, default=None)
     ap.add_argument("--n_samples", type=int, default=1)
     ap.add_argument("--masker", default=None, help="masker run, for runs with mask_source=masker")
+    ap.add_argument("--mask_source", default=None, choices=["data", "masker", "none"],
+                    help="override the run's mask source at test time; 'masker' with --masker evaluates a model "
+                         "trained on s2cloudless masks with Stage 1 predictions (C5 without retraining)")
     ap.add_argument("--calibrate_on", default="val", help="split used to fit the uncertainty temperature ('' to skip)")
     ap.add_argument("--limit", type=int, default=None, help="evaluate only the first N images")
     ap.add_argument("--batch", type=int, default=8)
@@ -232,6 +235,13 @@ def main(argv=None):
     for path in args.runs:
         pipe = Pipeline.from_run(path, device, masker=masker, which=args.which)
         name = pipe.cfg.get("name", Path(path).stem)
+        if args.mask_source and args.mask_source != pipe.mask_source:
+            if args.mask_source == "masker" and pipe.masker is None:
+                raise SystemExit("--mask_source masker needs --masker RUN")
+            if args.mask_source == "none" and pipe.cfg["model"].get("use_mask", True):
+                raise SystemExit(f"{name} was trained with a mask input; --mask_source none does not apply")
+            pipe.mask_source = args.mask_source
+            name = f"{name}+{args.mask_source}_mask"
         run_names.append(name)
         steps = args.steps if args.steps is not None else pipe.cfg.get("eval", {}).get("steps", 1)
         print(f"[+] evaluating {name} ({pipe.kind}, {steps} step(s)) on {len(loader.dataset)} images")

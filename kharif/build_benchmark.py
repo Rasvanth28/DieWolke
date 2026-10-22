@@ -96,7 +96,7 @@ def write_split(out_dir, split, records, meta):
         arr.flush()
     (out_dir / f"{split}_keys.json").write_text(json.dumps([m["id"] for m in meta]))
     (out_dir / f"{split}_meta.json").write_text(json.dumps(meta, indent=1))
-    (out_dir / f"{split}.done").touch()
+    (out_dir / f"{split}.done").write_text(json.dumps({"n": n}))
     print(f"[+] {split}: {n} patches")
 
 

@@ -1,6 +1,8 @@
-"""YAML configs with `base:` inheritance and dotted command-line overrides.
+"""YAML configs with `base:` inheritance, overlay files and dotted command-line overrides.
 
     cfg = load_config("configs/full.yaml", ["train.steps=2000", "data.root=/content/data"])
+    cfg = load_config("configs/full.yaml", overlays=["kaggle/kaggle.yaml"])   # platform settings
+Order: the config (with its bases), then each overlay, then the overrides.
 """
 import copy
 from pathlib import Path
@@ -50,8 +52,14 @@ def apply_overrides(cfg, overrides):
     return cfg
 
 
-def load_config(path, overrides=None):
-    cfg = apply_overrides(_load(path), overrides)
+def load_config(path, overrides=None, overlays=None):
+    cfg = _load(path)
+    name = cfg.get("name")
+    for o in overlays or []:
+        cfg = deep_merge(cfg, _load(o))
+    if name is not None:  # an overlay must not rename the run
+        cfg["name"] = name
+    cfg = apply_overrides(cfg, overrides)
     cfg.setdefault("name", Path(path).stem)
     return cfg
 
