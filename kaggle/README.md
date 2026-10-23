@@ -27,6 +27,11 @@ code are unchanged.
 - **Data is read-only under `/kaggle/input`.** Training only reads the cache.
   `find-cache` locates it inside whatever dataset or notebook output you attached. A missing
   `.done` marker no longer matters: some uploads drop empty files, and the arrays alone now count.
+- **`/kaggle/input` is network-backed and too slow to train from.** Measured on a T4 session:
+  a random 128 px crop of one array took 0.225 s, and the first benchmark had not reached step
+  50 after 17 minutes. Sequential reads run at ~150 MB/s, so notebooks 2 and 3 first copy the
+  cache to local disk (`find-cache --copy_to /kaggle/temp/cache`, ~2 min for 17 GB) and train
+  from there.
 
 ## Getting the data in
 
@@ -41,10 +46,14 @@ roughly 15–30 GB, depending on the test split size.
   ```
   The dataset stays private. Kaggle's dataset size limits aren't something I could confirm, so
   check your account's quota before uploading this much.
-- **Route B: build it on Kaggle** with `01_prepare_data.ipynb` (CPU, Internet on). Set the secret
-  `SEN12MSCR_URL` to `https://dataserv.ub.tum.de/public.php/dav/files/m1554803`, TUM's public
-  HTTPS share, which works from Kaggle. FTP does not. `kaggle_tools.py prepare` then:
-  1. streams each archive straight into extraction, so no `.tar.gz` is ever stored;
+- **Route B: build it on Kaggle** with `01_prepare_data.ipynb` (CPU, Internet on). It downloads
+  over rsync (`prepare --rsync`), with the password from the mediaTUM page in `RSYNC_PASSWORD`.
+  TUM's HTTPS share (`--base_url`, secret `SEN12MSCR_URL`) still works but is throttled to
+  ~0.1 MB/s, far too slow for 70 GB; it also returned 503 for a while. Measured from Kaggle, rsync
+  gave ~2.6 MB/s per connection and ~8.7 MB/s with three, so all archives download in parallel:
+  about 3.5 h for spring. FTP does not work from Kaggle. `kaggle_tools.py prepare` then:
+  1. downloads the archives to `/kaggle/temp` (resuming dropped connections, checking TUM's
+     `checksums.sha512`), extracts each one and deletes it;
   2. extracts S1 fully and picks the train/val/test patches from its file names (same official
      split and seed as the cache);
   3. deletes the unused S1 files and checks free disk;

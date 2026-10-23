@@ -35,6 +35,19 @@ def test_find_cache_and_ready_without_markers(tmp_path):
     assert cache_ready(d, "train") and not cache_ready(d, "val")  # no train.done marker needed
 
 
+def test_find_cache_copies_to_local_disk_once(tmp_path, capsys):
+    d = tmp_path / "input" / "ds" / "cache"
+    d.mkdir(parents=True)
+    for k in ("s1", "clear", "cloudy", "prob", "prob_clear", "shadow"):
+        np.save(d / f"train_{k}.npy", np.arange(10))
+    local = tmp_path / "local"
+    kt.main(["find-cache", "--input", str(tmp_path / "input"), "--copy_to", str(local)])
+    assert capsys.readouterr().out.strip().splitlines()[-1] == str(local)  # notebooks read the last line
+    assert cache_ready(local, "train") and (np.load(local / "train_clear.npy") == np.arange(10)).all()
+    kt.main(["find-cache", "--input", str(tmp_path / "input"), "--copy_to", str(local)])
+    assert "already" in capsys.readouterr().out  # a second call in the same session copies nothing
+
+
 def test_queue_runs_resumes_skips_and_restore(tmp_path, capsys):
     out = tmp_path / "working" / "runs"
     common = ["--cache", str(tmp_path), "--out_dir", str(out), "--gpus", "0", "--workers", "0",
@@ -92,3 +105,36 @@ def test_prepare_streams_archives_and_keeps_only_selected_patches(tmp_path):
     assert len(Cache.load(cache, "train")) == 3 and len(Cache.load(cache, "test")) == 2
     assert len(Cache.load(cache, "val")) == 1
     assert not list(data.rglob("*.tar.gz"))  # archives were never stored
+
+
+def test_prepare_rsync_downloads_verifies_and_resumes(tmp_path):
+    import hashlib
+    import shutil
+    import tarfile
+    import pytest
+    if not shutil.which("rsync"):
+        pytest.skip("rsync not installed")
+    from conftest import make_sen12mscr
+    src = make_sen12mscr(tmp_path / "src")
+    server = tmp_path / "server"
+    server.mkdir()
+    for mod in ("s1", "s2", "s2_cloudy"):
+        with tarfile.open(server / f"ROIs1158_spring_{mod}.tar.gz", "w:gz") as t:
+            t.add(src / f"ROIs1158_spring_{mod}", arcname=f"ROIs1158_spring_{mod}")
+    (server / "checksums.sha512").write_text("".join(
+        f"{hashlib.sha512(f.read_bytes()).hexdigest()}  ./{f.name}\n" for f in sorted(server.glob("*.tar.gz"))))
+    archives = tmp_path / "archives"
+    archives.mkdir()
+    big = server / "ROIs1158_spring_s2.tar.gz"
+    (archives / big.name).write_bytes(big.read_bytes()[:1000])  # a dropped download to resume
+    data, cache = tmp_path / "data", tmp_path / "cache"
+    kt.main(["prepare", "--rsync", str(server), "--archives", str(archives), "--data", str(data),
+             "--out", str(cache), "--n_train", "3", "--n_test", "2", "--spare", "0", "--set", "data.n_val=1"])
+    from diewolke.data import Cache
+    assert len(Cache.load(cache, "train")) == 3 and len(Cache.load(cache, "test")) == 2
+    assert not list(archives.glob("*.tar.gz"))  # each archive is deleted once extracted
+
+    bad = tmp_path / "bad.tar.gz"
+    bad.write_bytes(b"x")
+    assert kt.sha512_ok(bad, f"{'0' * 128}  ./bad.tar.gz\n") is False
+    assert kt.sha512_ok(bad, "") is None

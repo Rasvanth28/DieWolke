@@ -81,11 +81,42 @@ def find_cache(root="/kaggle/input", split="train"):
     return str(hits[0].parent) if hits else None
 
 
+def copy_cache(src, dst):
+    """Copy a cache directory to local disk; files already there with the same size are kept.
+
+    /kaggle/input is network-backed: random 128 px training crops from it measured ~0.2 s per
+    patch and array (training stalled), while sequential reads ran at ~150 MB/s."""
+    src, dst = Path(src), Path(dst)
+    files = [f for f in sorted(src.iterdir()) if f.is_file()]
+    total = sum(f.stat().st_size for f in files)
+    dst.mkdir(parents=True, exist_ok=True)
+    need = sum(f.stat().st_size for f in files
+               if not ((dst / f.name).exists() and (dst / f.name).stat().st_size == f.stat().st_size))
+    if need > shutil.disk_usage(dst).free:
+        raise SystemExit(f"not enough disk in {dst} for the cache ({_gb(need)} needed)")
+    t0 = time.time()
+    for f in files:
+        out = dst / f.name
+        if out.exists() and out.stat().st_size == f.stat().st_size:
+            continue
+        tmp = out.with_name(out.name + ".part")
+        shutil.copyfile(f, tmp)
+        os.replace(tmp, out)
+    if need:
+        print(f"[+] copied {_gb(need)} of the cache to {dst} in {time.time() - t0:.0f}s "
+              f"({need / 1e6 / max(1e-9, time.time() - t0):.0f} MB/s)", flush=True)
+    else:
+        print(f"[=] cache already in {dst} ({_gb(total)})", flush=True)
+    return str(dst)
+
+
 def cmd_find_cache(args):
     c = find_cache(args.input, args.split)
     if not c:
         raise SystemExit(f"no {args.split}_clear.npy under {args.input}; add the cache dataset to this notebook")
-    print(c)
+    if args.copy_to:
+        c = copy_cache(c, args.copy_to)
+    print(c)  # last line: the cache path the notebooks use
 
 
 # ----------------------------------------------------------------------------- restore
@@ -230,7 +261,7 @@ def stream_extract(url, dest, keep=None, retries=3, label=""):
     """
     import tarfile
     import urllib.request
-    dest = Path(dest)
+    dest = Path(dest).resolve()
     for attempt in range(1, retries + 1):
         written = seen = 0
         t0 = time.time()
@@ -255,6 +286,90 @@ def stream_extract(url, dest, keep=None, retries=3, label=""):
         except (OSError, EOFError, tarfile.TarError) as exc:
             print(f"[!] {label}: attempt {attempt}/{retries} failed after {seen} files: {exc}", flush=True)
     raise SystemExit(f"could not download {label}")
+
+
+def rsync_sizes(src):
+    """{file name: bytes} from an rsync listing of `src` ({} if the listing fails)."""
+    r = subprocess.run(["rsync", "--list-only", src.rstrip("/") + "/"], capture_output=True, text=True)
+    sizes = {}
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].startswith("-"):
+            sizes[parts[-1]] = int(parts[1].replace(",", ""))
+    return sizes
+
+
+def sha512_ok(path, checksums):
+    """Check `path` against a `sha512sum` listing ("<hash>  ./<name>"). None if it is not listed."""
+    import hashlib
+    want = next((ln.split()[0] for ln in checksums.splitlines() if ln.split()[-1].lstrip("./") == path.name), None)
+    if want is None:
+        return None
+    h = hashlib.sha512()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            h.update(block)
+    return h.hexdigest() == want
+
+
+def rsync_fetch(src, name, dest, checksums="", tries=10):
+    """Download one archive with rsync into `dest`. A dropped connection resumes where it stopped
+    (--append); the finished file is checked against the server's checksums.sha512."""
+    path = dest / name
+    for attempt in range(1, tries + 1):
+        r = subprocess.run(["rsync", "--append", "--timeout=300", f"{src.rstrip('/')}/{name}", str(dest) + "/"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[!] {name}: rsync attempt {attempt}/{tries} failed: {(r.stderr or r.stdout).strip()[-300:]}",
+                  flush=True)
+            time.sleep(30)
+            continue
+        ok = sha512_ok(path, checksums)
+        if ok is False:
+            print(f"[!] {name}: checksum mismatch, downloading it again", flush=True)
+            path.unlink()
+            continue
+        print(f"[+] {name}: downloaded {_gb(path.stat().st_size)}"
+              + (", checksum OK" if ok else " (no checksum to compare)"), flush=True)
+        return path
+    raise RuntimeError(f"could not download {name} with rsync")
+
+
+def rsync_all(src, names, dest, every=600):
+    """Start downloading all `names` in parallel (TUM limits each connection, not the total).
+    Returns {name: Future -> local path}; a background thread prints progress every `every` s."""
+    from concurrent.futures import ThreadPoolExecutor
+    if not shutil.which("rsync"):
+        raise SystemExit("rsync is not installed (Kaggle: !apt-get -qq install -y rsync)")
+    if src.startswith("rsync://") and not os.environ.get("RSYNC_PASSWORD"):
+        raise SystemExit("set RSYNC_PASSWORD (shown on https://mediatum.ub.tum.de/1554803); "
+                         "without it rsync waits for a password forever")
+    dest = Path(dest).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    checksums = ""
+    if subprocess.run(["rsync", f"{src.rstrip('/')}/checksums.sha512", str(dest) + "/"],
+                      capture_output=True).returncode == 0:
+        checksums = (dest / "checksums.sha512").read_text()
+    else:
+        print("[!] no checksums.sha512 on the server; archives will not be verified")
+    sizes = rsync_sizes(src)
+    pool = ThreadPoolExecutor(len(names))
+    futures = {n: pool.submit(rsync_fetch, src, n, dest, checksums) for n in names}
+
+    def progress():
+        # rate from the growth since the last line; finished archives are deleted after extraction
+        size = lambda n: (dest / n).stat().st_size if (dest / n).exists() else 0
+        t_last, last = time.time(), {n: size(n) for n in names}
+        while not all(f.done() for f in futures.values()):
+            time.sleep(every)
+            have = {n: size(n) for n in names}
+            rate = sum(max(0, have[n] - last[n]) for n in names) / max(1.0, time.time() - t_last)
+            t_last, last = time.time(), have
+            print("[.] download: " + ", ".join(f"{n.replace('.tar.gz', '')} {_gb(have[n])}/{_gb(sizes.get(n, 0))}"
+                                               for n in names) + f"; {rate / 1e6:.1f} MB/s", flush=True)
+
+    threading.Thread(target=progress, daemon=True).start()
+    return futures
 
 
 def select_keys(data, cfg, splits, margin=1.05, extra=10):
@@ -309,16 +424,27 @@ def cmd_prepare(args):
     names = prep.archives(args.seasons)
     s1_names = [n for n in names if n.endswith("_s1.tar.gz")]
     s2_names = [n for n in names if n not in s1_names]
+    downloads = {}
+    if args.rsync and not args.skip_download:
+        todo = [n for n in names if not (data / f".{n}.extracted").exists()]
+        downloads = rsync_all(args.rsync, todo, args.archives) if todo else {}
 
     def fetch(name, keep=None):
         marker = data / f".{name}.extracted"
         if marker.exists():
             print(f"[=] {name} already extracted")
             return
-        if not base:
-            raise SystemExit("set SEN12MSCR_URL (Kaggle: Add-ons > Secrets) or pass --base_url")
-        print(f"[+] {name}: streaming into {data} ({_gb(shutil.disk_usage(data).free)} free)", flush=True)
-        written, seen = stream_extract(prep.archive_url(base, name), data, keep, label=name)
+        if name in downloads:
+            print(f"[.] {name}: waiting for the download", flush=True)
+            path = downloads[name].result()
+            print(f"[+] {name}: extracting into {data}", flush=True)
+            written, seen = stream_extract(path.as_uri(), data, keep, label=name)
+            path.unlink()
+        else:
+            if not base:
+                raise SystemExit("pass --rsync, set SEN12MSCR_URL (Kaggle: Add-ons > Secrets) or pass --base_url")
+            print(f"[+] {name}: streaming into {data} ({_gb(shutil.disk_usage(data).free)} free)", flush=True)
+            written, seen = stream_extract(prep.archive_url(base, name), data, keep, label=name)
         print(f"[+] {name}: {written} of {seen} files kept", flush=True)
         marker.touch()
 
@@ -405,6 +531,8 @@ def main(argv=None):
     f = sub.add_parser("find-cache")
     f.add_argument("--input", default="/kaggle/input")
     f.add_argument("--split", default="train")
+    f.add_argument("--copy_to", default=None, help="copy the cache here first (local disk, e.g. /kaggle/temp/cache); "
+                                                   "training from /kaggle/input itself is far too slow")
     r = sub.add_parser("restore")
     r.add_argument("--src", default="/kaggle/input")
     r.add_argument("--dst", default="/kaggle/working/runs")
@@ -425,6 +553,9 @@ def main(argv=None):
     q.add_argument("--verbose", action="store_true", help="stream every training log line")
     p = sub.add_parser("prepare")
     p.add_argument("--base_url", default=None)
+    p.add_argument("--rsync", default=None, help="rsync source of the archives, e.g. rsync://<user>@dataserv.ub.tum.de/"
+                   "<user>; downloads all archives in parallel (much faster than TUM's HTTPS share)")
+    p.add_argument("--archives", default="/kaggle/temp/archives", help="where --rsync stores the archives")
     p.add_argument("--seasons", nargs="+", default=["spring"])
     p.add_argument("--data", default="/kaggle/temp/sen12ms_cr")
     p.add_argument("--out", default="/kaggle/working/cache")

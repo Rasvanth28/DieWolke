@@ -95,9 +95,11 @@ class GroupHeads(nn.Module):
 
     def forward(self, x):
         b, _, h, w = x.shape
-        out = x.new_zeros(b, self.k, N_S2, h, w)
-        for idx, head in zip(self.groups, self.heads):
-            out[:, :, idx] = head(x).view(b, self.k, len(idx), h, w)
+        parts = [head(x) for head in self.heads]
+        # under autocast the heads return fp16/bf16 while x may be fp32: allocate in the heads' dtype
+        out = parts[0].new_zeros(b, self.k, N_S2, h, w)
+        for idx, p in zip(self.groups, parts):
+            out[:, :, idx] = p.view(b, self.k, len(idx), h, w)
         return out.view(b, self.k * N_S2, h, w)
 
 

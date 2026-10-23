@@ -110,6 +110,13 @@ def test_group_heads_route_bands_to_the_right_channels():
     assert out.shape[1] == N_S2
 
 
+def test_group_heads_under_autocast_with_fp32_input():
+    # on CUDA, GroupNorm hands the heads fp32 features while the convs return fp16 (crashed on a Kaggle T4)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        out = GroupHeads(4, 8)(torch.rand(1, 4, 4, 4))
+    assert out.dtype == torch.bfloat16 and out.shape[1] == 2 * N_S2
+
+
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.stem)
 def test_every_config_builds(path):
     cfg = load_config(path)
