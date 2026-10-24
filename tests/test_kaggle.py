@@ -67,6 +67,22 @@ def test_queue_runs_resumes_skips_and_restore(tmp_path, capsys):
     assert kt.run_step(new / "smoke") == 5 and kt.run_step(new / "smoke_b") == 2
 
 
+def test_restore_skips_runs_whose_loss_ended_as_nan(tmp_path, capsys):
+    def fake_run(root, name, step, loss):
+        d = tmp_path / root / "runs" / name
+        d.mkdir(parents=True)
+        (d / "config.yaml").write_text("name: x\n")
+        torch.save({"step": step}, d / "last.pt")
+        (d / "log.csv").write_text(f"step,lr,loss,l1\n100,0.1,0.5,0.5\n{step},0.1,{loss},{loss}\n{step},,,\n")
+    fake_run("old", "full", 40000, "nan")  # broken run from the first session
+    fake_run("new", "full", 40000, "0.02")  # its retrained replacement, same final step
+    fake_run("old", "masker", 15000, "0.07")
+    dst = tmp_path / "working" / "runs"
+    kt.main(["restore", "--src", str(tmp_path), "--dst", str(dst)])
+    assert "full: skipped" in capsys.readouterr().out
+    assert "0.02" in (dst / "full" / "log.csv").read_text() and (dst / "masker" / "last.pt").exists()
+
+
 def test_queue_stops_when_session_time_is_up(tmp_path, capsys):
     import time
     out = tmp_path / "runs"

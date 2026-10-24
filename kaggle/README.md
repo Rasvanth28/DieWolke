@@ -33,6 +33,13 @@ code are unchanged.
   cache to local disk (`find-cache --copy_to /kaggle/temp/cache`, ~2 min for 17 GB) and train
   from there.
 
+- **Runs that diverged are not restored.** In the first Kaggle sessions every run with the NDVI
+  loss (C2) stalled at L1 ≈ 0.075 and then turned NaN (`full`, `full_20k`, `no_bga`, `no_unc`);
+  `no_ndvi` and `matched_baseline` trained normally. The cause was the index's 1/(NIR + red)
+  gradient on dark and no-data pixels. The loss now skips pixels below `loss.index_floor`, the
+  trainer skips non-finite updates and refuses to save NaN weights, and `restore` skips any run
+  whose last logged loss is NaN, so retrained runs can keep their names.
+
 ## Getting the data in
 
 The cache is ~4 MB per patch. The defaults (3,000 train, 300 val, full spring test) come to

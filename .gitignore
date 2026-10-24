@@ -18,3 +18,6 @@ runs_*/
 eval/
 *.egg-info/
 .pytest_cache/
+
+# downloaded Kaggle outputs (checkpoints are large)
+kaggle_logs/*.zip

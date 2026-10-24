@@ -119,6 +119,10 @@ def run(cfg):
     logger = CSVLogger(out / "log.csv")
 
     def checkpoint(name):
+        # a diverged model must not overwrite the last good checkpoint (it would be resumed from)
+        if not all(torch.isfinite(p).all() for p in model.parameters()):
+            raise SystemExit(f"[!] weights became NaN/inf before step {step}; stopping. {out / 'last.pt'} "
+                             "keeps the last good state; lower train.lr or check the loss before resuming")
         # best.pt is for evaluation only, so it skips the optimizer state (about half the file size;
         # matters where output space is limited, e.g. Kaggle). Resuming always uses last.pt.
         extra = {} if name == "best.pt" else {"opt": opt.state_dict(), "scaler": scaler.state_dict()}
@@ -134,6 +138,7 @@ def run(cfg):
     wait, t_ready = 0.0, time.time()
     model.train()
     stop = False
+    skipped = 0  # optimizer steps skipped for a non-finite gradient since the last log line
 
     def to_device(v):
         if channels_last and v.dim() == 4:
@@ -153,8 +158,12 @@ def run(cfg):
                 scaler.scale(loss / accum).backward()
                 if (step + 1) % accum == 0:
                     scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), t_cfg.get("grad_clip", 1.0))
-                    scaler.step(opt)
+                    gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), t_cfg.get("grad_clip", 1.0))
+                    # never apply a NaN/inf update (fp16 already skips these; fp32/bf16 would not)
+                    if torch.isfinite(gnorm):
+                        scaler.step(opt)
+                    else:
+                        skipped += 1
                     scaler.update()
                     opt.zero_grad(set_to_none=True)
                     if ema is not None:
@@ -170,8 +179,8 @@ def run(cfg):
                     data_wait = min(1.0, wait / max(1e-9, sec * n))
                     wait = 0.0
                     row = {"step": step, "lr": opt.param_groups[0]["lr"], "sec_per_step": sec, "data_wait": data_wait,
-                           **{k: v / n for k, v in running.items()}}
-                    running = {}
+                           "skipped": skipped / n, **{k: v / n for k, v in running.items()}}
+                    running, skipped = {}, 0
                     eta_min = sec * (stop_at - step) / 60
                     print(f"  step {step}/{t_cfg['steps']} " + " ".join(f"{k} {v:.4f}" for k, v in row.items()
                                                                         if k != "step") + f" | ~{eta_min:.0f} min left",

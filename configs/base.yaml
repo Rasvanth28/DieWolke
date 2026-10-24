@@ -43,6 +43,7 @@ loss:
   cloud_weight: 1.0                       # >1 up-weights masked pixels
   ndvi: 0.1                               # C2 NDVI-consistency weight (0 = off)
   indices: [ndvi]
+  index_floor: 0.1                        # C2 skips pixels with target NIR + red below this
   uncertainty: 0.05                       # C3 Laplace NLL weight (0 = off)
 
 train:

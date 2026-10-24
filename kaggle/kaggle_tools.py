@@ -15,6 +15,7 @@ so it checkpoints cleanly before Kaggle stops the session. Finished runs are ski
 ones resume. Run the same queue in the next session, after `restore`.
 """
 import argparse
+import csv
 import importlib.util
 import json
 import os
@@ -136,6 +137,15 @@ def run_target(run_dir):
     return yaml.safe_load(cfg.read_text())["train"]["steps"] if cfg.exists() else None
 
 
+def diverged(run_dir):
+    """True if the last training row of log.csv has a NaN loss (runs from before the NaN guard)."""
+    log = Path(run_dir) / "log.csv"
+    if not log.exists():
+        return False
+    rows = [r for r in csv.DictReader(log.open()) if r.get("loss")]
+    return bool(rows) and rows[-1]["loss"].lower() == "nan"
+
+
 def cmd_restore(args):
     """Copy run folders found anywhere under --src (earlier notebook versions added as inputs)."""
     dst = Path(args.dst)
@@ -146,6 +156,9 @@ def cmd_restore(args):
         if not (src / "config.yaml").exists():
             continue
         found += 1
+        if diverged(src):
+            print(f"[!] {src.name}: skipped {src} (its training loss ended as NaN)")
+            continue
         target = dst / src.name
         s_step, d_step = run_step(src), run_step(target)
         if s_step > d_step:

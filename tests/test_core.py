@@ -67,6 +67,27 @@ def test_ndvi_range_and_sign():
     assert torch.allclose(ndvi(x), torch.full((1, 2, 2), 0.6), atol=1e-4)
 
 
+def test_ndvi_loss_gradient_is_bounded_on_dark_pixels():
+    # dark and no-data target pixels with a near-zero prediction gave ~1/1e-6 gradients before
+    from diewolke.losses import bridge_loss
+    target = torch.full((1, 13, 4, 4), 0.3)
+    target[..., :2, :] = 0.0  # no-data rows
+    target[..., 2, :] = 0.01  # water: NIR + red = 0.02
+    mean = torch.full_like(target, 1e-4).requires_grad_()
+    _, terms = bridge_loss({"mean": mean, "log_scale": None}, {"clear": target},
+                           {"ndvi": 1.0, "uncertainty": 0.0})
+    (g,) = torch.autograd.grad(_ndvi_term(mean, target), mean)
+    assert torch.isfinite(g).all() and g.abs().max() <= 2 / 0.1 / 4 + 1e-6  # <= 2/floor per valid pixel
+    assert g[..., :3, :].abs().max() == 0  # dark rows are left out entirely
+    assert math.isfinite(terms["ndvi"])
+
+
+def _ndvi_term(mean, target):
+    from diewolke.losses import bridge_loss
+    total, _ = bridge_loss({"mean": mean, "log_scale": None}, {"clear": target}, {"ndvi": 1.0, "uncertainty": 0.0})
+    return total - (mean - target).abs().mean()  # the index part only
+
+
 def test_paired_difference():
     d = paired_difference(np.array([2.0, 3.0, 4.0]), np.array([1.0, 1.0, 1.0]), True)
     assert d["mean"] == pytest.approx(2.0) and d["frac_images_better"] == 1.0
