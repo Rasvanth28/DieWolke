@@ -18,6 +18,9 @@ Download the checkpoints from the pCloud link in the UnCRtainTS README. Each fol
   trained on SEN12MS-CR, the same task as ours. Folders like `diagonal_1` are multi-temporal
   SEN12MS-CR-TS models. The script refuses them unless you pass `--allow_multitemporal`, and even
   then they see one date only, which is not how they were trained.
+  In the authors' checkpoint folder (checked 2026-10-25) the only such folder is `monotemporalL2`.
+  It was trained with an L2 loss, so it predicts no variance and no `scale_uncrtaints.npy` is written.
+  `kaggle/03_evaluate.ipynb` downloads it and GLF-CR's `CR_net.pth` automatically.
 - **Inputs.** S1 is clipped to [-25, 0] dB for both VV and VH (their convention). S2 is divided by
   10000, or by 2000 if the checkpoint uses `rescale_method=resnet`. Both are handled
   automatically.
