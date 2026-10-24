@@ -1,7 +1,7 @@
 # Results: SEN12MS-CR spring, first full evaluation
 
 *Evaluated 2026-10-25 on Kaggle (`kaggle/03_evaluate.ipynb`, T4). Numbers are copied from the
-evaluation log; the per-image CSVs and the JSON with bootstrap CIs are in the notebook's `eval/` output.*
+evaluation output (`eval_results.zip`, extracted locally to `kaggle_logs/eval/`, not in git).*
 
 ## Setup and caveats
 
@@ -48,6 +48,51 @@ Paired differences vs `full` (other minus `full`, 95% CI, share of images where 
 | UnCRtainTS | +0.71 [+0.59, +0.81], 69% | +0.0156 [+0.0139, +0.0173] | −0.40 [−0.54, −0.27] | −0.0080 [−0.0112, −0.0049] |
 | GLF-CR | +0.46 [+0.36, +0.57], 55% | +0.0203 [+0.0188, +0.0219] | −0.61 [−0.77, −0.47] | −0.0243 [−0.0274, −0.0214] |
 | XGBoost | −2.14 [−2.26, −2.03], 16% | −0.0636 [−0.0663, −0.0608] | +1.13 [+0.97, +1.29] | +0.0139 [+0.0095, +0.0182] |
+
+### 1b. By cloud cover and by scene (real clouds)
+
+From `python scripts/eval_breakdown.py EVAL/test_real_baselines --metrics psnr ndvi_rmse`.
+Cloud fraction is the estimated mask's share of the patch.
+
+| cloud fraction | n | input | XGBoost | full | matched_baseline | UnCRtainTS | GLF-CR |
+|---|---|---|---|---|---|---|---|
+| 0.0–0.1 | 139 | 29.32 | 29.33 | 30.71 | 31.62 | 33.08 | 32.09 |
+| 0.1–0.3 | 148 | 26.47 | 27.06 | 29.65 | 30.11 | 30.88 | 31.07 |
+| 0.3–0.6 | 196 | 23.05 | 25.92 | 29.34 | 29.67 | 30.55 | 30.23 |
+| 0.6–0.9 | 299 | 19.04 | 25.20 | 28.62 | 28.61 | 29.18 | 28.72 |
+| 0.9–1.0 | 718 | 13.56 | 25.45 | 26.77 | 26.83 | 26.97 | 26.89 |
+
+Paired differences, run minus `full`:
+
+| | heavy cloud ≥ 0.9 (n = 718): PSNR | NDVI RMSE | partial cloud < 0.9 (n = 782): PSNR | NDVI RMSE |
+|---|---|---|---|---|
+| matched_baseline | +0.06 [−0.02, +0.14] | +0.0038 [+0.0008, +0.0067] | +0.33 [+0.24, +0.42] | −0.0050 [−0.0071, −0.0029] |
+| UnCRtainTS | +0.20 [+0.06, +0.33] | −0.0151 [−0.0199, −0.0105] | +1.17 [+1.01, +1.33] | −0.0015 [−0.0054, +0.0026] |
+| GLF-CR | +0.12 [−0.02, +0.28] | −0.0261 [−0.0313, −0.0211] | +0.78 [+0.63, +0.92] | −0.0228 [−0.0261, −0.0193] |
+| XGBoost | −1.32 [−1.49, −1.15] | +0.0128 [+0.0052, +0.0204] | −2.90 [−3.04, −2.76] | +0.0149 [+0.0109, +0.0192] |
+
+- **Under near-total cloud (48% of the test set), where only SAR carries information, the four
+  deep models are within 0.2 dB.** `full` is level with the matched baseline and GLF-CR (CIs
+  include 0) and 0.20 dB behind UnCRtainTS, and has lower NDVI error than the matched baseline.
+- **The gap to the published models comes from partly cloudy patches** (0.8–1.2 dB), i.e. from
+  using the visible pixels and the date difference between the cloudy and clear acquisitions.
+  That is where more training data would be expected to help most.
+- Synthetic clouds show the same split: matched_baseline minus `full` is +0.15 [−0.02, +0.33] dB
+  at ≥ 0.9 cover (n = 125) and −0.23 [−0.32, −0.15] dB below it (n = 1,375).
+
+PSNR per test scene (the spring test split has only 5 scenes):
+
+| scene | n | mean cloud | input | XGBoost | full | matched_baseline | UnCRtainTS | GLF-CR |
+|---|---|---|---|---|---|---|---|---|
+| 31 | 300 | 0.69 | 16.59 | 27.33 | 30.75 | 31.24 | 31.11 | 31.33 |
+| 44 | 293 | 0.71 | 17.08 | 25.03 | 27.27 | 27.49 | 26.40 | 28.26 |
+| 106 | 295 | 0.59 | 24.68 | 28.26 | 29.61 | 30.42 | 31.10 | 30.18 |
+| 123 | 282 | 0.57 | 21.25 | 25.28 | 27.35 | 27.27 | 29.13 | 27.98 |
+| 140 | 330 | 0.92 | 14.18 | 24.16 | 25.83 | 25.45 | 26.62 | 25.48 |
+
+The ranking changes from scene to scene (on scene 44 both of our models beat UnCRtainTS; on
+scene 140, the cloudiest, `full` beats the matched baseline and GLF-CR). Patches from one scene are
+correlated, so the per-image bootstrap CIs understate the uncertainty of the overall ranking.
 
 ## 2. Main comparison, synthetic clouds (exact masks)
 
@@ -122,6 +167,8 @@ types. Neither the matched baseline nor the UnCRtainTS checkpoint used here outp
 5. **Overall.** On real clouds `full` is 0.20 dB below the matched baseline; on synthetic clouds
    it is 0.20 dB above it. Both of our models trail the published models by 0.3–0.7 dB, which
    were trained on far more data; both beat the XGBoost gap-filling baseline by over 2 dB.
+   Under near-total cloud the deep models are within 0.2 dB of each other; the gap to the
+   published models is in partly cloudy patches.
 
 ## Open points
 
@@ -129,4 +176,5 @@ types. Neither the matched baseline nor the UnCRtainTS checkpoint used here outp
   is data or architecture. Planned, not yet run.
 - Seeds: one per run.
 - Validation (200 patches) ranked the ablations differently from test; use test numbers only.
+- The spring test split covers 5 scenes; CIs are over images, not scenes.
 - The Kharif benchmark (C4) is not built yet.
