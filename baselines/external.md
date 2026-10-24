@@ -74,9 +74,11 @@ the same way: point both at the benchmark cache.
 - **Training data.** These models were trained by their authors, probably on all four
   SEN12MS-CR seasons and with their own settings. If ours are trained on spring only, the
   published models have seen more data. State this next to their numbers.
-- **Validation.** Before trusting the adapters, score UnCRtainTS and GLF-CR on the official test
-  split. Their means should land near their published SEN12MS-CR numbers (DB-CR Table I: GLF-CR
-  31.85 dB, UnCRtainTS 31.28 dB PSNR). Our metric code and full-patch protocol differ slightly, so
-  expect small gaps, not large ones. A large gap means an input-convention mistake.
+- **Validation.** Before trusting the adapters, compare their scores with published SEN12MS-CR
+  numbers under the same protocol. The UnCRtainTS paper (Table 4, mono-temporal, all seasons)
+  reports UnCRtainTS 28.90 dB / SSIM 0.880 / SAM 8.32 and GLF-CR 28.64 / 0.885 / 8.98. On our
+  spring test split (2026-10-25) the adapters gave 28.83 / 0.882 / 8.00 and 28.59 / 0.887 / 7.79,
+  so the input conventions are right. DB-CR Table I (GLF-CR 31.85, UnCRtainTS 31.28 dB) uses a
+  different protocol. A large gap would mean an input-convention mistake.
 - **Timing.** On the RTX A4000 this should take roughly 5–20 minutes per model for a few thousand test
   patches. GLF-CR is the slower of the two (9 tiles per patch).

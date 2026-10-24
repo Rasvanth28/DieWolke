@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 dieWolke does cloud removal for all 13 Sentinel-2 bands using Sentinel-1 SAR. The full code
 pipeline exists: data, Stage 1 masker, Stage 2 bridge model, baselines, evaluation, the Kharif
-benchmark tools and a Colab runbook. It has only been run on synthetic random data on CPU (the
-test suite and smoke configs). **Nothing has been trained on SEN12MS-CR yet, and there are no
-results.** Do not report numbers that do not exist.
+benchmark tools and a Colab runbook. All runs have been trained on the SEN12MS-CR spring cache
+(2,434 training patches) on Kaggle, and the first test evaluation is in `RESULTS.md`. The Kharif
+benchmark has not been built. Do not report numbers that do not exist.
 
 `NOVELTY.md` records the agreed research positioning: contributions C1–C5, what is already
 published, baseline numbers and required ablations. Check it before proposing architecture
