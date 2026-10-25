@@ -6,6 +6,8 @@
     python kaggle/kaggle_tools.py queue full@40000 matched_baseline@40000 --session_start $T0
     python kaggle/kaggle_tools.py prepare --out /kaggle/working/cache   # build the cache on Kaggle (CPU notebook);
                                                                         # streams the archives, keeps only cached patches
+    python kaggle/kaggle_tools.py prepare --shard 0 --out /kaggle/working/cache   # one 4,500-patch training shard;
+                                                                        # find-cache merges all attached shards
     python kaggle/kaggle_tools.py publish --dir /data/cache --slug diewolke-cache   # upload a cache from any machine
 
 Run specs for `queue`: CONFIG[:NAME][@STEPS], e.g. `full@40000`, `full:full_20k@20000`,
@@ -30,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OVERLAY = ROOT / "kaggle" / "kaggle.yaml"
 SESSION_MINUTES = 12 * 60
 MB_PER_PATCH = 4.0  # cache size per patch (see diewolke/data/sen12mscr.py CACHE_FIELDS)
+SHARD_FILE = "shard.json"  # written by `prepare --shard`; marks a cache directory as one training shard
 
 
 def _gb(n):
@@ -82,13 +85,14 @@ def find_cache(root="/kaggle/input", split="train"):
     return str(hits[0].parent) if hits else None
 
 
-def copy_cache(src, dst):
+def copy_cache(src, dst, prefixes=None):
     """Copy a cache directory to local disk; files already there with the same size are kept.
+    `prefixes` limits the copy to files whose names start with one of them.
 
     /kaggle/input is network-backed: random 128 px training crops from it measured ~0.2 s per
     patch and array (training stalled), while sequential reads ran at ~150 MB/s."""
     src, dst = Path(src), Path(dst)
-    files = [f for f in sorted(src.iterdir()) if f.is_file()]
+    files = [f for f in sorted(src.iterdir()) if f.is_file() and (not prefixes or f.name.startswith(prefixes))]
     total = sum(f.stat().st_size for f in files)
     dst.mkdir(parents=True, exist_ok=True)
     need = sum(f.stat().st_size for f in files
@@ -111,7 +115,73 @@ def copy_cache(src, dst):
     return str(dst)
 
 
+def find_shards(root="/kaggle/input"):
+    """Training shards (`prepare --shard`) under root, one directory per shard number, in order."""
+    found = {}
+    for f in sorted(Path(root).rglob(SHARD_FILE), key=lambda p: len(p.parts)) if Path(root).exists() else []:
+        if (f.parent / "train_clear.npy").exists():
+            found.setdefault(json.loads(f.read_text())["shard"], f.parent)  # same shard attached twice: first wins
+    return [found[k] for k in sorted(found)]
+
+
+def merge_shards(shards, dst, chunk=128):
+    """Concatenate the training shards into one train cache in dst (local disk), so training code
+    sees a single cache. Rerunning with the same shards does nothing."""
+    import numpy as np
+    from diewolke.data.sen12mscr import CACHE_FIELDS
+    dst = Path(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    stamp = [[str(s), (s / "train_clear.npy").stat().st_size] for s in shards]
+    record = dst / "train_merged.json"
+    if record.exists() and json.loads(record.read_text()) == stamp:
+        print(f"[=] {len(shards)} training shards already merged in {dst}", flush=True)
+        return
+    ids = []
+    for s in shards:
+        ids += json.loads((s / "train_keys.json").read_text())
+    if len(set(ids)) != len(ids):
+        raise SystemExit("the shards overlap: build all of them with the same --shard_size and seed")
+    need = sum((s / f"train_{k}.npy").stat().st_size for s in shards for k in CACHE_FIELDS)
+    if need > shutil.disk_usage(dst).free:
+        raise SystemExit(f"not enough disk in {dst} to merge the shards ({_gb(need)} needed)")
+    t0 = time.time()
+    for k in CACHE_FIELDS:
+        parts = [np.load(s / f"train_{k}.npy", mmap_mode="r") for s in shards]
+        if len({(p.dtype, p.shape[1:]) for p in parts}) != 1:
+            raise SystemExit(f"train_{k}.npy has different shapes or dtypes across shards")
+        tmp = dst / f"train_{k}.npy.part"
+        out = np.lib.format.open_memmap(tmp, "w+", parts[0].dtype, (len(ids),) + parts[0].shape[1:])
+        i = 0
+        for p in parts:
+            for start in range(0, len(p), chunk):
+                block = p[start:start + chunk]
+                out[i:i + len(block)] = block
+                i += len(block)
+        out.flush()
+        del out
+        os.replace(tmp, dst / f"train_{k}.npy")
+    (dst / "train_keys.json").write_text(json.dumps(ids))
+    (dst / "train.done").write_text(json.dumps({"n": len(ids)}))
+    record.write_text(json.dumps(stamp))
+    print(f"[+] merged {len(shards)} training shards ({len(ids)} patches, {_gb(need)}) into {dst} "
+          f"in {time.time() - t0:.0f}s", flush=True)
+
+
 def cmd_find_cache(args):
+    shards = find_shards(args.input) if args.split == "train" else []
+    if shards:
+        if not args.copy_to:
+            raise SystemExit(f"{len(shards)} training shards found; pass --copy_to to merge them on local disk")
+        print("[+] training shards: " + ", ".join(str(s) for s in shards), flush=True)
+        merge_shards(shards, args.copy_to)
+        # val (and test) come from the ordinary cache, which shards do not contain
+        other = find_cache(args.input, "val")
+        if other:
+            copy_cache(other, args.copy_to, prefixes=("val_", "val.", "test_", "test."))
+        else:
+            print("[!] no val split under the inputs: attach the original cache too", flush=True)
+        print(args.copy_to)  # last line: the cache path the notebooks use
+        return
     c = find_cache(args.input, args.split)
     if not c:
         raise SystemExit(f"no {args.split}_clear.npy under {args.input}; add the cache dataset to this notebook")
@@ -385,11 +455,20 @@ def rsync_all(src, names, dest, every=600):
     return futures
 
 
-def select_keys(data, cfg, splits, margin=1.05, extra=10):
+def shard_keys(keys, shard, size, seed=0):
+    """Training shard `shard`: patches [shard * size, (shard + 1) * size) of all training patches in a
+    fixed seeded order. Shards built with the same size and seed never overlap."""
+    import random
+    order = sorted(keys)
+    random.Random(seed).shuffle(order)
+    return sorted(order[shard * size:(shard + 1) * size])
+
+
+def select_keys(data, cfg, splits, margin=1.05, extra=10, shard=None, shard_size=None):
     """Choose the patches to cache from the S1 file names alone (same split and seed as the cache).
 
     A few extra per split (`margin`) cover patches whose S2 files turn out to be missing; the cache
-    step then subsamples to the exact limits."""
+    step then subsamples to the exact limits. With `shard`, only that training shard is chosen."""
     from diewolke.data.sen12mscr import NAME_RE, split_triplets, subsample
     d = cfg["data"]
     keys = []
@@ -398,6 +477,11 @@ def select_keys(data, cfg, splits, margin=1.05, extra=10):
         if m and m.group(2).lower() == "s1":
             keys.append((m.group(1), int(m.group(3)), int(m.group(4))))
     parts = split_triplets([(k, {}) for k in sorted(keys)], d.get("split", "official"), seed=d.get("seed", 0))
+    if shard is not None:
+        train = [k for k, _ in parts["train"]]
+        n_shards = -(-len(train) // shard_size)
+        print(f"[+] {len(train)} training patches = {n_shards} shards of {shard_size}; this is shard {shard}")
+        return len(keys), {"train": shard_keys(train, shard, shard_size, d.get("seed", 0))}
     limits = {"train": d.get("n_train"), "val": d.get("n_val"), "test": d.get("n_test")}
     chosen = {}
     for s in splits:
@@ -429,7 +513,11 @@ def cmd_prepare(args):
     data = Path(args.data)
     data.mkdir(parents=True, exist_ok=True)
     sets = [f"data.root={data}", f"data.cache={args.out}"] + args.set
-    if args.n_train is not None:
+    if args.shard is not None:  # a training shard: every extracted training patch, no val/test
+        if args.full:
+            raise SystemExit("--shard and --full cannot be combined")
+        args.splits = ["train"]
+    elif args.n_train is not None:
         sets.append(f"data.n_train={args.n_train}")
     if args.n_test is not None:
         sets.append(f"data.n_test={args.n_test}")
@@ -471,7 +559,10 @@ def cmd_prepare(args):
             chosen = {s: [tuple(k) for k in v] for s, v in json.loads(sel_file.read_text()).items()}
             n_all = None
         else:
-            n_all, chosen = select_keys(data, cfg, args.splits, extra=args.spare)
+            n_all, chosen = select_keys(data, cfg, args.splits, extra=args.spare,
+                                        shard=args.shard, shard_size=args.shard_size)
+            if args.shard is not None and not chosen["train"]:
+                raise SystemExit(f"shard {args.shard} is empty: there are fewer shards of {args.shard_size}")
             sel_file.write_text(json.dumps(chosen))
         selected = {k for v in chosen.values() for k in v}
         print(f"[+] selected {len(selected)} patches" + (f" of {n_all}" if n_all else "") + ": "
@@ -493,7 +584,16 @@ def cmd_prepare(args):
     if not args.skip_download:
         for n in s2_names:
             fetch(n, keep_fn)
-    caches = prepare_caches(cfg, splits=tuple(args.splits))
+    if args.shard is None:
+        caches = prepare_caches(cfg, splits=tuple(args.splits))
+    else:  # no test scenes here, so no scene split: cache exactly the shard's extracted patches
+        from diewolke.data import build_cache, find_triplets
+        items = [(k, p) for k, p in find_triplets(data) if k in selected]
+        caches = {"train": build_cache(items, args.out, "train")}
+        # marks the output as one shard; find-cache merges all attached shards
+        (Path(args.out) / SHARD_FILE).write_text(json.dumps(
+            {"shard": args.shard, "shard_size": args.shard_size, "seed": cfg["data"].get("seed", 0),
+             "n": len(caches["train"])}))
     size = sum(f.stat().st_size for f in Path(args.out).glob("*") if f.is_file())
     print(f"[+] cache in {args.out}: " + ", ".join(f"{s} {len(c)}" for s, c in caches.items()) + f"; {_gb(size)}")
     if str(args.out).startswith("/kaggle/working") and size > args.output_limit_gb * 1e9:
@@ -575,6 +675,10 @@ def main(argv=None):
     p.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     p.add_argument("--n_train", type=int, default=None)
     p.add_argument("--n_test", type=int, default=None)
+    p.add_argument("--shard", type=int, default=None, help="build only training shard K (0, 1, ...); "
+                   "run once per shard and attach all outputs to the training notebook")
+    p.add_argument("--shard_size", type=int, default=4500, help="training patches per shard (~4 MB each; "
+                   "4,500 stays under the ~20 GB /kaggle/working limit)")
     p.add_argument("--set", nargs="*", default=[])
     p.add_argument("--skip_download", action="store_true", help="use tifs already in --data")
     p.add_argument("--spare", type=int, default=10, help="extra patches per split (+5%%) in case S2 files are missing")

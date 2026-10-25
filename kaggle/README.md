@@ -72,6 +72,24 @@ roughly 15–30 GB, depending on the test split size.
   finish in one session, because the extracted files in `/kaggle/temp` are not saved. For the
   full test split, run it again with `--splits test` and attach both outputs.
 
+## A larger training set (shards)
+
+The first runs trained on 2,434 patches. The full spring training split is much larger and
+does not fit in one ~20 GB notebook output, so it is cached in **shards**:
+`prepare --shard K` (notebook 1, `SHARD = K`) caches patches `[K·4500, (K+1)·4500)` of all
+training patches in a fixed seeded order, about 18 GB each. Shards never overlap. Each one is
+a separate CPU session with the full download (~3.5 h), so use one copy of notebook 1 per
+shard. The first log line says how many shards there are. Shards hold training patches only, so
+val and test (and therefore the results) stay the same.
+
+In the training notebook, attach every shard plus the original cache. `find-cache --copy_to`
+merges the shards into one training cache on local disk and copies val/test from the original
+cache; the training code is unchanged. The merged cache needs ~4 GB of local disk per 1,000
+patches: check `env`'s `/kaggle/temp` line before starting. Train under new names
+(`full:full_big@40000 matched_baseline:matched_big@40000`) so the old runs stay comparable; same
+steps, so any difference comes from the data. Don't attach the shards to the evaluation
+notebook (XGBoost would train on them).
+
 ## The code itself
 
 Upload the `DieWolke` folder (without data, runs or `.venv`) as a private dataset, or set

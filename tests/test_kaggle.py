@@ -154,3 +154,47 @@ def test_prepare_rsync_downloads_verifies_and_resumes(tmp_path):
     bad.write_bytes(b"x")
     assert kt.sha512_ok(bad, f"{'0' * 128}  ./bad.tar.gz\n") is False
     assert kt.sha512_ok(bad, "") is None
+
+
+def test_shard_keys_are_disjoint_and_cover_everything():
+    keys = [("ROIs1158_spring", s, p) for s in range(3) for p in range(7)]
+    shards = [kt.shard_keys(keys, i, 5) for i in range(5)]
+    flat = [k for s in shards for k in s]
+    assert sorted(flat) == sorted(keys) and len(set(flat)) == len(keys)
+    assert [len(s) for s in shards] == [5, 5, 5, 5, 1]
+    assert kt.shard_keys(keys, 1, 5) == shards[1]  # same seed, same shard
+
+
+def test_prepare_shards_then_find_cache_merges_them(tmp_path, capsys):
+    import tarfile
+    import pytest
+    from conftest import make_sen12mscr
+    from diewolke.data import Cache
+    src = make_sen12mscr(tmp_path / "src")  # 8 training patches
+    arch = tmp_path / "server"
+    arch.mkdir()
+    for mod in ("s1", "s2", "s2_cloudy"):
+        with tarfile.open(arch / f"ROIs1158_spring_{mod}.tar.gz", "w:gz") as t:
+            t.add(src / f"ROIs1158_spring_{mod}", arcname=f"ROIs1158_spring_{mod}")
+    inp = tmp_path / "input"
+    # the original cache supplies val and test
+    kt.main(["prepare", "--base_url", arch.as_uri(), "--data", str(tmp_path / "d"), "--out", str(inp / "orig" / "cache"),
+             "--n_train", "2", "--spare", "0"])
+    for k in range(3):  # shards of 3: 3 + 3 + 2 patches
+        kt.main(["prepare", "--base_url", arch.as_uri(), "--data", str(tmp_path / f"d{k}"),
+                 "--out", str(inp / f"shard{k}" / "cache"), "--shard", str(k), "--shard_size", "3"])
+        assert not (inp / f"shard{k}" / "cache" / "val_clear.npy").exists()
+    with pytest.raises(SystemExit, match="empty"):
+        kt.main(["prepare", "--base_url", arch.as_uri(), "--data", str(tmp_path / "d3"),
+                 "--out", str(tmp_path / "x"), "--shard", "3", "--shard_size", "3"])
+    local = tmp_path / "local"
+    capsys.readouterr()
+    kt.main(["find-cache", "--input", str(inp), "--copy_to", str(local)])
+    assert capsys.readouterr().out.strip().splitlines()[-1] == str(local)
+    train = Cache.load(local, "train")
+    assert len(train) == 8 and len(set(train.ids)) == 8
+    first = Cache.load(inp / "shard1" / "cache", "train")
+    assert (np.asarray(train["clear"][3]) == np.asarray(first["clear"][0])).all()  # shard order kept
+    assert len(Cache.load(local, "val")) == 2 and len(Cache.load(local, "test")) == 3
+    kt.main(["find-cache", "--input", str(inp), "--copy_to", str(local)])
+    assert "already merged" in capsys.readouterr().out
