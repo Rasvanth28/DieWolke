@@ -1,4 +1,5 @@
 % dieWolke: first SEN12MS-CR (spring) evaluation, IEEE conference format (IEEEtran).
+% Written for readers outside the field: every term is explained where it first appears.
 % Numbers are copied from RESULTS.md and the evaluation reports (kaggle_logs/eval/*/report.md).
 % Build: pdflatex dieWolke_ieee.tex (twice), or upload to Overleaf; IEEEtran.cls ships with TeX Live.
 \documentclass[conference]{IEEEtran}
@@ -8,8 +9,6 @@
 \usepackage{textcomp}
 \usepackage{xcolor}
 \usepackage{booktabs}
-\usepackage{multirow}
-\usepackage{siunitx}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.17}
 \usepackage[hidelinks]{hyperref}
@@ -18,8 +17,7 @@
 
 \begin{document}
 
-\title{SAR-Conditioned Brownian-Bridge Reconstruction of All 13 Sentinel-2 Bands Under Clouds:
-A Controlled Study on SEN12MS-CR}
+\title{Seeing Through Clouds: Using Radar to Rebuild Cloud-Covered Sentinel-2 Satellite Images}
 
 % TODO: replace with the real author names and affiliations
 \author{\IEEEauthorblockN{Author One}
@@ -38,387 +36,391 @@ email@example.com}
 \maketitle
 
 \begin{abstract}
-Optical Sentinel-2 imagery is frequently obscured by clouds, while Sentinel-1 synthetic aperture
-radar (SAR) is not. We present dieWolke, a SAR-conditioned Brownian-bridge diffusion model that
-reconstructs all 13 Sentinel-2 bands, and test four proposed additions in a controlled setting:
-band-group attention over visible, red-edge/NIR and SWIR bands (C1), an NDVI-consistency loss
-(C2), a per-pixel Laplace uncertainty head (C3), and a separate cloud-mask stage instead of
-end-to-end training (C5). Every model is trained on 2,434 patches of the spring subset of
-SEN12MS-CR and evaluated on its full official spring test split (1,500 patches) with paired
-bootstrap confidence intervals. With single-step inference, our model reaches 28.12\,dB PSNR on
-real clouds, 2.1\,dB above a gradient-boosting gap-filling baseline and 0.5--0.7\,dB below the
-published UnCRtainTS and GLF-CR checkpoints, which were trained on far more data. The separate
-mask stage is the clearest result: it beats end-to-end training by 1.09\,dB PSNR and 0.078 SSIM,
-and masks from our Stage-1 masker are as good as exact ones. The uncertainty head ranks errors
-(Spearman 0.43--0.55), and keeping the 50\,\% most certain pixels lowers NDVI RMSE by 26\,\%.
-The NDVI loss lowers NDVI error by about 3.5\,\% at a 0.16\,dB PSNR cost, and band-group attention
-does not help at this data scale. The deficit to the published models comes from partly cloudy
-patches; under near-total cloud all deep models are within 0.2\,dB.
+Satellite photos of farmland are often useless because clouds cover the ground, and this happens
+most during the monsoon, exactly when farmers and planners need the data. Radar satellites can
+see through clouds, but radar images do not look like photos. We built a deep learning model,
+called dieWolke, that takes a cloudy Sentinel-2 image together with a Sentinel-1 radar image of
+the same place and predicts what the ground looks like without clouds, in all 13 spectral bands
+that Sentinel-2 records. On top of a standard design we tested four ideas: processing related
+bands in separate branches, checking a vegetation index (NDVI) during training, letting the model
+say how confident it is in each pixel, and finding the clouds first in a separate step. We
+trained on a small dataset (2,434 image patches) and tested on 1,500 patches from places the
+model had never seen. Our model comes within 0.5--0.7\,dB of two published models that were
+trained on far more data, and beats a classical machine-learning method by more than 2\,dB.
+Finding the clouds first is clearly the right choice (1.1\,dB better than skipping that step),
+and the confidence map is genuinely useful: ignoring the least confident half of the pixels cuts
+vegetation-index errors by 26\,\%. The vegetation-index check helps a little, and splitting the
+bands into branches did not help with this amount of data.
 \end{abstract}
 
 \begin{IEEEkeywords}
-cloud removal, Sentinel-1, Sentinel-2, SAR--optical fusion, diffusion bridge, uncertainty,
-NDVI
+cloud removal, satellite imagery, radar, Sentinel-1, Sentinel-2, deep learning, agriculture
 \end{IEEEkeywords}
 
 \section{Introduction}
-Sentinel-2 provides 13-band multispectral imagery every few days, but cloud cover makes many
-acquisitions unusable, most severely in the seasons and regions where crop monitoring matters
-most. Sentinel-1 SAR images the same ground through clouds. SAR--optical fusion networks such as
-DSen2-CR~\cite{meraner2020dsen2cr}, GLF-CR~\cite{xu2022glfcr} and UnCRtainTS~\cite{ebel2023uncrtaints}
-exploit this on the SEN12MS-CR benchmark~\cite{ebel2021sen12mscr}, and recent generative models
-cast the task as a diffusion bridge from the cloudy to the clear image~\cite{hu2025dbcr}.
+The European Sentinel-2 satellites photograph the whole Earth every few days. Unlike a normal
+camera, which records three colours, they record 13 \emph{bands}: the visible colours plus
+several invisible ones in the near- and short-wave infrared. Those invisible bands are what make
+the images so useful for farming, because healthy plants reflect strongly in the near infrared
+and wet soil looks different from dry soil in the short-wave infrared. A simple number computed
+from the red and near-infrared bands, the \emph{NDVI} (Normalised Difference Vegetation Index),
+is the standard way to measure how green and healthy crops are.
 
-Downstream users of reconstructed imagery mostly consume vegetation indices and need to know
-which pixels to trust. This motivates the four additions we study on top of a SAR-conditioned
-Brownian bridge:
+The problem is clouds. In India's Kharif season (July to October), the main monsoon growing
+season, most Sentinel-2 images of farmland are partly or completely cloudy. The data is missing
+exactly when it matters most.
+
+The Sentinel-1 satellites carry a radar instead of a camera. Radar sends out its own microwave
+signal, which passes through clouds, so Sentinel-1 always sees the ground. Radar images, however,
+show surface texture and moisture rather than colour, so they cannot simply replace the photo.
+
+The idea behind this project, and behind earlier work such as DSen2-CR~\cite{meraner2020dsen2cr},
+GLF-CR~\cite{xu2022glfcr} and UnCRtainTS~\cite{ebel2023uncrtaints}, is to give a neural network
+both images: the cloudy photo shows what the clear parts look like, and the radar gives clues
+about what is hidden under the clouds. The network learns to fill in the gaps.
+
+\textbf{What we add.} Combining radar and optical images is not new, and neither is the type of
+model we use (a so-called diffusion bridge~\cite{hu2025dbcr}). What we contribute are four
+additions aimed at agricultural use, each tested carefully on its own:
 \begin{itemize}
-\item \textbf{C1, band-group attention:} separate attention streams, stems and output heads for
-the visible, red-edge/NIR and SWIR bands;
-\item \textbf{C2, NDVI-consistency loss:} an L1 penalty on the NDVI implied by the reconstruction;
-\item \textbf{C3, per-pixel uncertainty:} a Laplace scale head trained on a detached mean and
-calibrated by temperature scaling;
-\item \textbf{C5, separate mask stage:} a Stage-1 cloud/shadow masker versus end-to-end training
-without any mask.
+\item \textbf{Band groups (C1):} the visible, the plant-sensitive (red-edge and near infrared) and
+the moisture-sensitive (short-wave infrared) bands are handled by separate branches of the
+network, because they behave differently.
+\item \textbf{Vegetation check (C2):} during training, the model is also penalised when the NDVI of
+its output is wrong, not only when the pixels are wrong.
+\item \textbf{Confidence map (C3):} the model outputs, for every pixel, how sure it is of its own
+answer, so users know which parts to trust.
+\item \textbf{Clouds first (C5):} a small separate network first finds the clouds and their
+shadows, and only then does the main network fill them in.
 \end{itemize}
-(C4, an Indian Kharif-season benchmark, is future work and is not evaluated here.)
+A fifth part of the project (C4), a test set built from real Indian Kharif fields, is in progress
+and not covered here.
 
-Our contribution in this paper is a controlled evaluation of these components rather than a new
-state of the art. All of our own models share one architecture, one training budget and one data
-subset, so each ablation isolates one change. We report paired bootstrap confidence intervals
-for every difference, break the results down by cloud cover and by scene, and run the
-published UnCRtainTS and GLF-CR checkpoints through the same evaluation code. Negative results
-(C1) are reported as such.
+\textbf{How we test.} All versions of our model share the same design, training time and data, so
+when we switch one idea off, any change in the results comes from that idea alone. We also ran the
+published UnCRtainTS and GLF-CR models, using their authors' own trained weights, through exactly
+the same test code. Ideas that did not work are reported as such.
 
 \section{Related Work}
-\textbf{SAR--optical cloud removal.} DSen2-CR~\cite{meraner2020dsen2cr} introduced a residual
-network that fuses Sentinel-1 with cloudy Sentinel-2 and the SEN12MS-CR dataset of co-registered
-S1, cloudy S2 and clear S2 triplets over four seasons~\cite{ebel2021sen12mscr}. GLF-CR~\cite{xu2022glfcr}
-adds global--local SAR-guided fusion, and UnCRtainTS~\cite{ebel2023uncrtaints} combines attention
-with aleatoric uncertainty, both for mono- and multi-temporal input.
+\textbf{Radar plus optical.} DSen2-CR~\cite{meraner2020dsen2cr} was one of the first deep networks
+to combine Sentinel-1 radar with cloudy Sentinel-2 images, together with the SEN12MS-CR dataset of
+matching radar, cloudy and clear images from around the world~\cite{ebel2021sen12mscr}. GLF-CR
+\cite{xu2022glfcr} improved how the two kinds of image are combined, and UnCRtainTS
+\cite{ebel2023uncrtaints} added an estimate of how uncertain each prediction is.
 
-\textbf{Generative cloud removal.} DB-CR~\cite{hu2025dbcr} models cloud removal as a diffusion
-bridge between the cloudy and the clear image with attention-based SAR fusion and reports
-single-step inference. Brownian-bridge diffusion for image-to-image translation was introduced
-by BBDM~\cite{li2023bbdm}. CloudBreaker~\cite{ahmed2025cloudbreaker} applies conditional flow
-matching from SAR alone to four optical bands and evaluates NDVI after reconstruction.
+\textbf{Diffusion models.} Diffusion models are the family behind modern AI image generators. A
+\emph{diffusion bridge} is a variant that learns to turn one image into another, here a cloudy
+image into a clear one~\cite{li2023bbdm}. DB-CR~\cite{hu2025dbcr} applied this to cloud removal
+with radar, and CloudBreaker~\cite{ahmed2025cloudbreaker} produces four optical bands from radar
+alone.
 
-\textbf{Classical gap filling.} Gupta and Verma~\cite{gupta2026cloudfree} reconstruct cloudy
-Sentinel-2 pixels with tree ensembles before crop classification. Our gradient-boosting
-baseline~\cite{chen2016xgboost} follows this spirit but is not their method.
+\textbf{Classical methods.} Gupta and Verma~\cite{gupta2026cloudfree} filled cloudy Sentinel-2
+pixels in India with tree-based machine learning before classifying crops. Our XGBoost
+comparison~\cite{chen2016xgboost} follows the same spirit, but it is our own implementation,
+not theirs.
 
-\section{Method}
+\section{How the Model Works}
 
-\subsection{Data representation}
-Each sample is a 13-band cloudy image $y$, a clear target $x_0$ of the same location at a nearby
-date, and a two-channel Sentinel-1 image $s$ (VV, VH). Sentinel-2 digital numbers are clipped to
-$[0, 10^4]$ and divided by $10^4$; VV and VH are clipped to $[-25, 0]$ and $[-32.5, 0]$\,dB and
-scaled to $[0, 1]$, following SEN12MS-CR conventions. A binary cloud/shadow mask $m$ comes either
-from the data (Section~\ref{sec:masks}) or from the Stage-1 masker.
+\subsection{Inputs and outputs}
+For each location the model receives three things: the cloudy Sentinel-2 image (13 bands), a
+Sentinel-1 radar image (two channels, called VV and VH), and a \emph{cloud mask}, a black-and-white
+map of which pixels are covered by cloud or cloud shadow. It outputs the 13-band cloud-free image
+and, optionally, a confidence map. All images are 256$\times$256 pixels, or 2.56\,km by 2.56\,km
+on the ground. Pixel values are scaled to the range 0 to 1.
 
-\subsection{Brownian bridge}
-We use a Brownian bridge between $x_0$ at $t = 0$ and $y$ at $t = 1$,
+\subsection{The bridge between cloudy and clear}
+Picture a slider with the cloudy image at one end and the clear image at the other. Positions in
+between are a blend of the two plus a little random noise. During training, the network is shown
+points along this slider and has to work out the clear end. Formally, the point at position $t$
+(0 = clear, 1 = cloudy) is
 \begin{equation}
-x_t = (1-t)\,x_0 + t\,y + \sigma\sqrt{t(1-t)}\,\epsilon,\quad \epsilon \sim \mathcal{N}(0, I),
+x_t = (1-t)\,x_{\mathrm{clear}} + t\,x_{\mathrm{cloudy}} + \sigma\sqrt{t(1-t)}\,\epsilon,
 \end{equation}
-with $\sigma = 0.5$. At $t = 1$ the state equals the cloudy image exactly, so sampling starts from
-$y$ without noise. Given a prediction $\hat{x}_0$, the reverse step from $t$ to $s < t$ has mean
-$\hat{x}_0 + \frac{s}{t}(x_t - \hat{x}_0)$ and variance $\sigma^2 s(t-s)/t$. With a single step,
-the sampler returns the network's prediction at $t = 1$; all results in this paper use this
-deterministic single-step regime. During training $t$ is uniform on $[10^{-3}, 1]$, and with
-probability 0.25 it is set to exactly 1 so that the single-step case is trained directly.
+where $\epsilon$ is random noise and $\sigma = 0.5$ sets how much noise is added. At $t = 1$ the
+point is exactly the cloudy image, with no noise. When the model is used, it starts there and
+jumps to the clear end in a single step, which makes it fast. All results in this paper use this
+one-step mode. During training, a quarter of the examples are taken at exactly $t = 1$ so that
+the model gets plenty of practice at this one-step jump.
 
-\subsection{Network}
-The denoiser is a U-Net with four resolution levels (48, 96, 192, 192 channels), two residual
-blocks per level and a sinusoidal time embedding. Its input is $x_t$, the optical condition (the
-cloudy image with masked pixels set to zero), the mask and $s$. A separate SAR encoder produces
-features at every level, and attention blocks at 1/4 and 1/8 resolution and in the bottleneck
-cross-attend from optical to SAR features. The output is a residual on the condition: clear
-pixels are copied and the network fills what is masked. The training loss is L1 on all 13 bands
-plus the C2 and C3 terms below.
+\subsection{The network}
+The main network is a U-Net, a standard design for image tasks that first shrinks the image to
+understand the overall scene and then expands it back to full size to produce detailed output.
+It has four levels of detail. A separate radar branch turns the radar image into features at
+every level, and \emph{attention} layers at the coarser levels let the optical part of the network
+look up the relevant radar information. Pixels that are not cloudy are copied straight from the
+input, so the network only has to fill in what is hidden. Training minimises the average
+difference between the predicted and the true clear image (an L1 loss), plus the extra terms
+described below.
 
-\subsection{C1: band-group attention}
-In the full model, the input stem, every attention block and the output head are split into three
-band groups: visible (B01--B04), red-edge/NIR (B05--B08, B8A, B09) and SWIR (B10--B12). Each group
-has its own projection, self-attention, SAR cross-attention and feed-forward layers; the streams
-exchange a pooled summary through a gate initialised to identity and are merged by a
-zero-initialised projection. Each group's bands are predicted by a group-specific head. The
-ablation \textit{no\_bga} replaces all of this by all-band equivalents with a similar parameter
-count.
+\subsection{C1: Band groups}
+In the full model the input layer, every attention layer and the output layer are split into
+three branches: visible (bands B01--B04), red-edge and near infrared (B05--B08, B8A, B09) and
+short-wave infrared (B10--B12). Each branch has its own weights and its own view of the radar
+features, and the branches share a short summary with each other. The comparison version replaces
+the branches with a single shared layer of about the same size.
 
-\subsection{C2: NDVI-consistency loss}
-We add $\lambda_{\mathrm{ndvi}} \lVert \mathrm{NDVI}(\hat{x}_0) - \mathrm{NDVI}(x_0) \rVert_1$
-with $\lambda_{\mathrm{ndvi}} = 0.1$, where $\mathrm{NDVI} = (\mathrm{NIR} - \mathrm{Red}) /
-(\mathrm{NIR} + \mathrm{Red})$. The gradient of this ratio grows as the inverse of the
-denominator, and with a small epsilon it drove our first training runs to NaN. We therefore clamp
-the predicted denominator at 0.1 and exclude pixels whose target denominator is below 0.1 (water,
-shadow, no-data).
+\subsection{C2: Vegetation check}
+The loss gets an extra term: the difference between the NDVI of the predicted image and the NDVI
+of the true image, with weight 0.1. NDVI is a ratio, and on very dark pixels (water, shadow,
+missing data) its value jumps wildly; in our first runs this made training break down. We
+therefore leave out pixels where the red and near-infrared bands are both very dark.
 
-\subsection{C3: per-pixel uncertainty}
-The head also outputs a per-band log-scale $\log b$, and the model is trained with the Laplace
-negative log-likelihood $|x_0 - \mathrm{sg}(\hat{x}_0)|/b + \log b$ with weight 0.05, where
-$\mathrm{sg}$ stops the gradient~\cite{kendall2017uncertainties}. Detaching the mean means the
-head only explains the remaining error and does not change what the mean learns. After training,
-one temperature per band is fitted on the validation split to maximise likelihood~\cite{guo2017calibration}.
+\subsection{C3: Confidence map}
+For each pixel and band, the model also predicts a spread $b$: a small $b$ means ``I am sure'',
+a large $b$ means ``I might be far off''. It learns this by being rewarded when large errors come
+with a large spread and small errors with a small spread~\cite{kendall2017uncertainties}. This
+extra task is kept separate from the main prediction, so switching it on does not change what the
+main image is trained on. After training, the spreads are rescaled slightly so that they match the
+real errors on held-out data (\emph{calibration}~\cite{guo2017calibration}).
 
-\subsection{C5: cloud masks and the two-stage design}
-\label{sec:masks}
-For real cloudy images the mask is estimated: s2cloudless~\cite{zupanc2017s2cloudless}
-probability above 0.4, dilated, plus a spectral-index shadow heuristic~\cite{zhai2018cloudshadow}
-restricted to the neighbourhood of clouds. For synthetic training and evaluation pairs, a real
-cloud from another patch is blended onto a clear image with soft edges and a displaced cast
-shadow, which gives an exact mask. The Stage-1 masker is a four-level U-Net (base width 32)
-trained for 15k steps on synthetic clouds with binary cross-entropy plus 0.5 Dice loss; it reaches
-a validation IoU of 0.964. The \textit{end\_to\_end} variant receives the raw cloudy image and no
-mask at all.
+\subsection{C5: Finding the clouds first}
+On real cloudy images nobody knows the exact cloud outline, so we estimate it with a standard
+cloud detector, s2cloudless~\cite{zupanc2017s2cloudless}, plus a simple rule for shadows
+\cite{zhai2018cloudshadow}. To get images where the right answer is known exactly, we also create
+\emph{synthetic} cloudy images: a real cloud is cut out of one image and pasted, with its shadow,
+onto a clear image of another place. The cloud-finding network (a small U-Net) is trained on these
+synthetic images and finds the cloud-and-shadow area with an overlap (IoU) of 0.964 with the truth
+on validation data. For comparison, an \emph{end-to-end} version gets no cloud mask at all and has
+to figure out the clouds by itself while reconstructing.
 
-\section{Experimental Setup}
+\section{Experiments}
 
 \subsection{Data}
-We use the spring subset of SEN12MS-CR (ROIs1158) with the official scene split. Training uses a
-seeded random sample of 2,500 patches of the training scenes; after skipping pairs whose
-``clear'' target has more than 5\,\% cloud, 2,434 training pairs remain. Validation uses 300
-patches and test 1,500 patches from the five official spring test scenes, all at
-$256 \times 256$ pixels.
-\textbf{Spring-only training and testing is not comparable with results on all four seasons},
-such as Table~I of DB-CR~\cite{hu2025dbcr}; we therefore do not compare against numbers reported in
-other papers.
+We use SEN12MS-CR~\cite{ebel2021sen12mscr}, a public dataset of matching radar, cloudy and clear
+images. To keep the first experiments small and fast, we use only its spring part. From the
+training areas we took a random sample of 2,500 patches; after removing pairs whose ``clear''
+image was itself more than 5\,\% cloudy, 2,434 remained for training. We use 300 patches for
+validation (choosing the best checkpoint) and 1,500 patches from five test areas that the model
+never sees during training. Because we use only spring data, our numbers should not be compared
+directly with papers that use all four seasons, such as DB-CR~\cite{hu2025dbcr}.
 
 \subsection{Training}
-All bridge models are trained with AdamW (learning rate $2 \times 10^{-4}$, weight decay
-$10^{-4}$, 1,000 warm-up steps, cosine decay to 5\,\%), batch size 8, random $128 \times 128$
-crops with flips and rotations, gradient clipping at 1.0, fp16 mixed precision and an exponential
-moving average (0.999) of the weights, on NVIDIA T4 GPUs. The full model and the matched baseline
-train for 40k steps; the ablations, a 20k-step copy of the full model (\textit{full\_20k}) and the
-end-to-end variant train for 20k steps. Each configuration is trained once (one seed). The
-checkpoint with the best validation PSNR is evaluated with its EMA weights.
+Each model was trained on free NVIDIA T4 graphics cards on Kaggle, with batches of 8 random
+128$\times$128 crops (flipped and rotated for variety), the AdamW optimiser with a learning rate
+of $2\times10^{-4}$ that slowly decreases, and a smoothed average of the weights. The full model and
+the comparison model trained for 40,000 steps; the experiments that switch one idea off trained
+for 20,000 steps each, against a 20,000-step copy of the full model. Each version was trained once.
 
-\subsection{Compared methods}
-\textit{Matched baseline:} the same bridge model with C1--C3 removed. \textit{UnCRtainTS} and
-\textit{GLF-CR}: the authors' published checkpoints (UnCRtainTS \texttt{monotemporalL2}, trained
-with an L2 loss and without uncertainty output; GLF-CR \texttt{CR\_net}), run unchanged through our
-evaluation. Both were trained on all seasons of SEN12MS-CR. As a check of our input conventions,
-UnCRtainTS scores 28.83\,dB / 0.882 SSIM / 8.00\textdegree{} SAM on our spring test split,
-against 28.90 / 0.880 / 8.32 reported on the all-season test split~\cite{ebel2023uncrtaints}.
-\textit{XGBoost:} per-patch gradient boosting from S1 and clear pixels to each S2
-band~\cite{chen2016xgboost}, with a model pooled over the training split for the 837 test patches
-that have too few clear pixels.
+\subsection{What we compare}
+\begin{itemize}
+\item \textbf{Ours, full:} with C1, C2 and C3 switched on.
+\item \textbf{Ours, matched:} the identical model with C1, C2 and C3 switched off. This is the fair
+test of whether our additions help.
+\item \textbf{UnCRtainTS and GLF-CR:} published models, run with their authors' weights. They were
+trained on all four seasons of SEN12MS-CR, far more data than ours. As a sanity check, UnCRtainTS
+scores 28.83\,dB on our spring test set, close to the 28.90\,dB its authors report on the full test
+set~\cite{ebel2023uncrtaints}, which tells us we are feeding it data correctly.
+\item \textbf{XGBoost:} a classical machine-learning method that, for each image, learns from the
+clear pixels how radar relates to each band, then fills in the cloudy pixels.
+\item \textbf{Cloudy input:} doing nothing, as a floor.
+\end{itemize}
 
-\subsection{Metrics}
-Following the SEN12MS-CR literature, PSNR, SSIM, MAE, RMSE and SAM (degrees) are computed on all
-13 bands with data range 1, per image, then averaged. We add NDVI RMSE and versions of PSNR and
-NDVI RMSE restricted to masked (cloudy) pixels. Differences between methods are paired over test
-images, with 95\,\% bootstrap confidence intervals. Uncertainty is assessed by negative
-log-likelihood, calibration error, the Spearman correlation between predicted scale and absolute
-error, and the area under the sparsification error curve (AUSE)~\cite{ilg2018uncertainty}.
+\subsection{How we score}
+\begin{itemize}
+\item \textbf{PSNR} (peak signal-to-noise ratio, in dB): how close the output is to the true
+image; higher is better, and in this field a gain of 1\,dB is considered substantial.
+\item \textbf{SSIM} (0 to 1): how well shapes and textures match; higher is better.
+\item \textbf{SAM} (degrees): how well the ``spectral signature'' of each pixel, its pattern across
+the 13 bands, matches; lower is better.
+\item \textbf{NDVI error} (RMSE): how far off the vegetation index is; lower is better.
+\end{itemize}
+All are computed on all 13 bands for each test image and then averaged. ``Cloud'' versions use
+only the pixels that were under cloud. When we say one model is better than another, we give a
+95\,\% confidence interval in square brackets, computed by resampling the test images; if the
+interval includes zero, the difference could be chance.
 
 \section{Results}
 
-\subsection{Main comparison on real clouds}
-Table~\ref{tab:main} lists the results on real clouds. All deep models improve PSNR by about
-10\,dB over the cloudy input and beat XGBoost by more than 2\,dB. The full model is 0.20\,dB
-[0.14, 0.27] below the matched baseline. The published UnCRtainTS and GLF-CR checkpoints are
-0.71\,dB [0.59, 0.81] and 0.46\,dB [0.36, 0.57] above the full model; GLF-CR has the lowest NDVI
-error by a clear margin.
+\subsection{Main comparison}
+Table~\ref{tab:main} shows the results on real clouds. Every deep model improves the image by
+about 10\,dB over doing nothing and beats XGBoost by more than 2\,dB. Our full model is slightly
+behind our matched model (0.20\,dB [0.14, 0.27]). The published models are ahead of ours by
+0.46--0.71\,dB, which is not surprising given that they learned from many times more data. GLF-CR
+has clearly the most accurate vegetation index.
 
-\begin{table*}[t]
+\begin{table}[t]
 \centering
-\caption{Real clouds, SEN12MS-CR spring test split (1,500 patches). Mean over images; ``cloud''
-columns use masked pixels only. Our models are trained on 2,434 spring patches; UnCRtainTS and
-GLF-CR use the authors' checkpoints trained on all seasons.}
+\caption{Real clouds, 1,500 test patches. Higher PSNR and SSIM are better; lower SAM and NDVI
+error are better. Our models learned from 2,434 spring patches; the published models from all of
+SEN12MS-CR.}
 \label{tab:main}
-\begin{tabular}{lcccccccc}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
 \toprule
-Method & PSNR\,$\uparrow$ & SSIM\,$\uparrow$ & MAE\,$\downarrow$ & RMSE\,$\downarrow$ & SAM\,$\downarrow$ & NDVI RMSE\,$\downarrow$ & PSNR cloud\,$\uparrow$ & NDVI RMSE cloud\,$\downarrow$ \\
+Method & PSNR & SSIM & SAM & NDVI error \\
 \midrule
-Cloudy input & 18.624 & 0.6761 & 0.1247 & 0.1616 & 13.817 & 0.2686 & 17.730 & 0.2867 \\
-XGBoost & 25.981 & 0.8028 & 0.0384 & 0.0532 & 9.535 & 0.1669 & 25.699 & 0.1765 \\
-Ours, full (C1+C2+C3) & 28.124 & 0.8664 & 0.0292 & 0.0431 & 8.403 & 0.1530 & 28.033 & 0.1503 \\
-Ours, matched baseline & 28.324 & 0.8699 & 0.0286 & 0.0423 & 8.319 & 0.1522 & 28.188 & 0.1500 \\
-UnCRtainTS (published) & \best{28.830} & 0.8820 & 0.0280 & \best{0.0400} & 7.999 & 0.1449 & 28.511 & 0.1468 \\
-GLF-CR (published) & 28.588 & \best{0.8867} & \best{0.0279} & 0.0406 & \best{7.789} & \best{0.1286} & \best{28.600} & \best{0.1292} \\
+Cloudy input (do nothing) & 18.62 & 0.676 & 13.82 & 0.269 \\
+XGBoost (classical) & 25.98 & 0.803 & 9.54 & 0.167 \\
+Ours, full & 28.12 & 0.866 & 8.40 & 0.153 \\
+Ours, matched & 28.32 & 0.870 & 8.32 & 0.152 \\
+UnCRtainTS (published) & \best{28.83} & 0.882 & 8.00 & 0.145 \\
+GLF-CR (published) & 28.59 & \best{0.887} & \best{7.79} & \best{0.129} \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
-\subsection{Where the gap comes from}
-Fig.~\ref{fig:cloudfrac} splits the test set by estimated cloud fraction. Under near-total cloud
-(fraction $\geq 0.9$, 718 patches, 48\,\% of the test set), where only SAR carries information,
-the four deep models lie within 0.2\,dB of each other: the full model is level with the matched
-baseline ($+0.06$\,dB [$-0.02$, $+0.14$]) and GLF-CR ($+0.12$ [$-0.02$, $+0.28$]) and 0.20\,dB
-[0.06, 0.33] behind UnCRtainTS. On partly cloudy patches (782 patches) the published models lead
-by 0.78--1.17\,dB, which points at the use of visible pixels and the date difference between the
-cloudy and the clear acquisition, the parts that most likely benefit from more training data.
-The per-scene ranking also varies: on scene 44 both of our models beat UnCRtainTS, and on the
-cloudiest scene (140, mean cloud fraction 0.92) the full model beats both the matched baseline
-and GLF-CR. Because the spring test split contains only five scenes and patches within a scene are
-correlated, the per-image confidence intervals understate the uncertainty of the overall ranking.
+\subsection{Where the difference comes from}
+Fig.~\ref{fig:cloudfrac} splits the test images by how cloudy they are, and this tells an
+interesting story. When an image is almost completely covered (90\,\% cloud or more, which is
+almost half the test set), the model has nothing to go on except the radar, and all four deep
+models score within 0.2\,dB of each other. Our full model is level with our matched model and with
+GLF-CR there, and only 0.20\,dB behind UnCRtainTS.
+
+The published models pull ahead on \emph{partly} cloudy images, by 0.8--1.2\,dB. To do well on
+those, a model has to combine the visible pixels with the radar, and cope with the fact that the
+cloudy and the clear photo were taken on different days. That is the kind of skill that comes from
+seeing many examples, so more training data should help us most here.
+
+The ranking also changes from place to place. In one test area both of our models beat
+UnCRtainTS, and in the cloudiest area our full model beats both our matched model and GLF-CR.
+With only five test areas, the overall ranking is less certain than the confidence intervals
+suggest.
 
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
   width=\columnwidth, height=6.2cm,
-  symbolic x coords={0--0.1,0.1--0.3,0.3--0.6,0.6--0.9,0.9--1.0},
-  xtick=data, xlabel={Estimated cloud fraction}, ylabel={PSNR (dB)},
+  symbolic x coords={0--10\%,10--30\%,30--60\%,60--90\%,90--100\%},
+  xtick=data, xlabel={Share of the image covered by cloud}, ylabel={PSNR (dB), higher is better},
   ymin=12, ymax=34, ymajorgrids, grid style={gray!25},
   legend style={font=\scriptsize, at={(0.02,0.02)}, anchor=south west, cells={anchor=west}},
   tick label style={font=\scriptsize}, label style={font=\small},
   every axis plot/.append style={thick, mark size=1.6pt},
 ]
-\addplot[gray, mark=x] coordinates {(0--0.1,29.32) (0.1--0.3,26.47) (0.3--0.6,23.05) (0.6--0.9,19.04) (0.9--1.0,13.56)};
-\addplot[brown!70!black, mark=diamond*] coordinates {(0--0.1,29.33) (0.1--0.3,27.06) (0.3--0.6,25.92) (0.6--0.9,25.20) (0.9--1.0,25.45)};
-\addplot[blue, mark=*] coordinates {(0--0.1,30.71) (0.1--0.3,29.65) (0.3--0.6,29.34) (0.6--0.9,28.62) (0.9--1.0,26.77)};
-\addplot[cyan!70!black, dashed, mark=o] coordinates {(0--0.1,31.62) (0.1--0.3,30.11) (0.3--0.6,29.67) (0.6--0.9,28.61) (0.9--1.0,26.83)};
-\addplot[red, mark=square*] coordinates {(0--0.1,33.08) (0.1--0.3,30.88) (0.3--0.6,30.55) (0.6--0.9,29.18) (0.9--1.0,26.97)};
-\addplot[orange, mark=triangle*] coordinates {(0--0.1,32.09) (0.1--0.3,31.07) (0.3--0.6,30.23) (0.6--0.9,28.72) (0.9--1.0,26.89)};
+\addplot[gray, mark=x] coordinates {(0--10\%,29.32) (10--30\%,26.47) (30--60\%,23.05) (60--90\%,19.04) (90--100\%,13.56)};
+\addplot[brown!70!black, mark=diamond*] coordinates {(0--10\%,29.33) (10--30\%,27.06) (30--60\%,25.92) (60--90\%,25.20) (90--100\%,25.45)};
+\addplot[blue, mark=*] coordinates {(0--10\%,30.71) (10--30\%,29.65) (30--60\%,29.34) (60--90\%,28.62) (90--100\%,26.77)};
+\addplot[cyan!70!black, dashed, mark=o] coordinates {(0--10\%,31.62) (10--30\%,30.11) (30--60\%,29.67) (60--90\%,28.61) (90--100\%,26.83)};
+\addplot[red, mark=square*] coordinates {(0--10\%,33.08) (10--30\%,30.88) (30--60\%,30.55) (60--90\%,29.18) (90--100\%,26.97)};
+\addplot[orange, mark=triangle*] coordinates {(0--10\%,32.09) (10--30\%,31.07) (30--60\%,30.23) (60--90\%,28.72) (90--100\%,26.89)};
 \legend{Cloudy input, XGBoost, Ours full, Ours matched, UnCRtainTS, GLF-CR}
 \end{axis}
 \end{tikzpicture}
-\caption{PSNR on real clouds by estimated cloud fraction (bins of 139, 148, 196, 299 and 718
-patches). The deep models converge under near-total cloud; the published models lead on partly
-cloudy patches.}
+\caption{Quality versus cloud cover on real clouds (139, 148, 196, 299 and 718 test patches per
+group). Under near-total cloud the deep models are almost equal; the published models lead on
+partly cloudy images.}
 \label{fig:cloudfrac}
 \end{figure}
 
 \subsection{Synthetic clouds}
-With transplanted clouds, ground truth and masks are exact (Table~\ref{tab:synth}). Here the full
-model is 0.20\,dB [0.12, 0.28] \emph{above} the matched baseline, with lower SAM and NDVI RMSE,
-while the matched baseline keeps a higher SSIM. The sign of the full-versus-matched difference
-therefore depends on the cloud type, and neither model is consistently better.
+With pasted clouds we know the exact truth underneath and the exact cloud outline
+(Table~\ref{tab:synth}). Here the picture flips: our full model is 0.20\,dB [0.12, 0.28]
+\emph{ahead} of the matched model, with better spectral and vegetation accuracy, although the
+matched model keeps a slightly better SSIM. So whether our additions help depends on the type of
+cloud, and neither version is better across the board.
 
 \begin{table}[t]
 \centering
-\caption{Synthetic clouds (exact masks), test split.}
+\caption{Synthetic clouds (real clouds pasted onto clear images, so the truth is known exactly).}
 \label{tab:synth}
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{lccccc}
-\toprule
-Method & PSNR & SSIM & SAM & NDVI RMSE & PSNR cloud \\
-\midrule
-Cloudy input & 19.510 & 0.6887 & 8.808 & 0.2258 & 17.208 \\
-Ours, full & \best{29.080} & 0.8699 & \best{7.491} & \best{0.1478} & \best{27.926} \\
-Ours, matched & 28.880 & \best{0.8761} & 7.616 & 0.1509 & 27.636 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Ablations of C1--C3}
-Table~\ref{tab:abl} removes one component at a time from \textit{full\_20k}. Every removal
-\emph{raises} whole-image PSNR: by 0.36\,dB [0.29, 0.44] without band-group attention, 0.16
-[0.11, 0.20] without the NDVI loss and 0.15 [0.09, 0.21] without the uncertainty head. The NDVI
-loss is the only component that lowers its target metric: without it, whole-image NDVI RMSE rises
-by 0.0053 [0.0038, 0.0067], about 3.5\,\%; inside clouds the effect is not significant. Band-group
-attention does not lower the error of the red-edge, NIR or SWIR bands it was designed for: per-band
-MAE of \textit{no\_bga} is equal or lower in B05--B12 (e.g.\ B07 0.0563 vs.\ 0.0587, B8A 0.0595
-vs.\ 0.0619).
-
-\begin{table}[t]
-\centering
-\caption{Ablations on real clouds, 20k training steps each. $\Delta$ is the paired difference to
-full\_20k with 95\,\% CI.}
-\label{tab:abl}
-\setlength{\tabcolsep}{3pt}
-\begin{tabular}{lcccc}
-\toprule
-Run & PSNR & SAM & NDVI RMSE & $\Delta$PSNR \\
-\midrule
-full\_20k & 27.839 & 8.690 & 0.1518 & --- \\
-no\_bga ($-$C1) & 28.203 & 8.653 & 0.1529 & $+0.36$ [0.29, 0.44] \\
-no\_ndvi ($-$C2) & 27.997 & 8.624 & 0.1571 & $+0.16$ [0.11, 0.20] \\
-no\_unc ($-$C3) & 27.986 & 8.426 & 0.1494 & $+0.15$ [0.09, 0.21] \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{C5: separate mask stage versus end-to-end}
-Table~\ref{tab:c5} compares, at matched training length, the model given exact masks, the same
-model given the Stage-1 masker's masks, and the end-to-end variant without any mask. End-to-end
-training loses 1.09\,dB PSNR [0.98, 1.20], 0.078 SSIM [0.076, 0.081] and 1.36\,dB inside clouds
-[1.24, 1.48]; it is better on only 26\,\% of images by PSNR and 3\,\% by SSIM. Its error in
-B01 (coastal aerosol) is almost twice that of the masked model. Its NDVI RMSE is slightly lower ($-0.0049$
-[$-0.0081$, $-0.0016$]). Masks from the Stage-1 masker match exact masks at both training lengths,
-so the two-stage design costs nothing in accuracy.
-
-\begin{table}[t]
-\centering
-\caption{C5 on synthetic clouds. All rows except the last two use 20k training steps.}
-\label{tab:c5}
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{lcccc}
-\toprule
-Configuration & PSNR & SSIM & SAM & PSNR cloud \\
-\midrule
-full\_20k, exact masks & 28.746 & 0.8625 & 7.952 & 27.556 \\
-full\_20k, Stage-1 masks & 28.757 & 0.8642 & 7.948 & 27.582 \\
-end\_to\_end, no mask & 27.658 & 0.7841 & 9.145 & 26.196 \\
-\midrule
-full (40k), exact masks & 29.080 & 0.8699 & 7.491 & 27.926 \\
-full (40k), Stage-1 masks & 29.084 & 0.8713 & 7.485 & 27.947 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{C3: uncertainty}
-On real clouds the predicted scale correlates with the absolute error (Spearman 0.431, 0.440 after
-calibration), and temperature scaling lowers the calibration error from 0.085 to 0.055
-(Table~\ref{tab:unc}). Dropping the most uncertain pixels steadily lowers NDVI error, from 0.182 at
-full coverage to 0.134 when the 50\,\% most certain pixels are kept, a 26\,\% reduction. On
-synthetic clouds the raw calibration error is 0.037 and the Spearman correlation 0.55, but the
-temperature fitted on real-cloud validation data worsens calibration to 0.060: calibration does
-not transfer between cloud types. Neither the matched baseline nor the UnCRtainTS checkpoint used
-here outputs uncertainty, so no uncertainty comparison is possible.
-
-\begin{table}[t]
-\centering
-\caption{Uncertainty of the full model on real clouds, and NDVI RMSE on the pixels kept after
-removing the most uncertain ones.}
-\label{tab:unc}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lcccc}
 \toprule
- & NLL & Calib.\ err. & Spearman & AUSE \\
+Method & PSNR & SSIM & SAM & NDVI error \\
 \midrule
-Raw & $-2.209$ & 0.085 & 0.431 & 0.00606 \\
-Temperature-calibrated & $-2.230$ & 0.055 & 0.440 & 0.00593 \\
+Cloudy input & 19.51 & 0.689 & 8.81 & 0.226 \\
+Ours, full & \best{29.08} & 0.870 & \best{7.49} & \best{0.148} \\
+Ours, matched & 28.88 & \best{0.876} & 7.62 & 0.151 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Testing each idea on its own}
+Table~\ref{tab:abl} switches off one idea at a time. Surprisingly, switching off any of them makes
+the overall image slightly \emph{better}: by 0.36\,dB without band groups, 0.16\,dB without the
+vegetation check and 0.15\,dB without the confidence map. The vegetation check does do its own job:
+without it, the NDVI error goes up by about 3.5\,\% (0.0053 [0.0038, 0.0067]). The band groups,
+on the other hand, do not even improve the bands they were designed for; the red-edge,
+near-infrared and short-wave infrared errors are the same or lower without them.
+
+\begin{table}[t]
+\centering
+\caption{Switching off one idea at a time (real clouds, 20,000 training steps each). The last
+column is the change in PSNR compared with the full model, with its confidence interval.}
+\label{tab:abl}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lccc}
+\toprule
+Version & PSNR & NDVI error & Change in PSNR \\
 \midrule
-Pixels kept & 100\,\% & 90\,\% & 75\,\% & 50\,\% \\
-NDVI RMSE & 0.182 & 0.171 & 0.158 & 0.134 \\
+Full (all ideas on) & 27.84 & 0.152 & --- \\
+Without band groups & 28.20 & 0.153 & $+0.36$ [0.29, 0.44] \\
+Without vegetation check & 28.00 & 0.157 & $+0.16$ [0.11, 0.20] \\
+Without confidence map & 27.99 & 0.149 & $+0.15$ [0.09, 0.21] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Finding the clouds first}
+This is our clearest result (Table~\ref{tab:c5}). Without a cloud mask, the model is 1.1\,dB
+worse overall [0.98, 1.20], 1.4\,dB worse under the clouds, and has a much lower SSIM (0.78 versus
+0.86). It is better on only about a quarter of the images. Just as important, the masks from our
+own cloud-finding network work as well as the exact masks, so the two-step design costs nothing.
+
+\begin{table}[t]
+\centering
+\caption{Finding clouds first versus not using a mask (synthetic clouds).}
+\label{tab:c5}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}
+\toprule
+Version (20,000 steps) & PSNR & SSIM & PSNR under cloud \\
+\midrule
+With the exact cloud mask & 28.75 & 0.863 & 27.56 \\
+With our cloud finder's mask & 28.76 & 0.864 & 27.58 \\
+No mask at all & 27.66 & 0.784 & 26.20 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The confidence map}
+The confidence map is useful. Pixels where the model says it is unsure really do have larger
+errors (rank correlation 0.43 on real clouds, 0.55 on synthetic ones), and after calibration its
+stated confidence matches reality more closely (calibration error 0.055, down from 0.085). The
+practical test is in Table~\ref{tab:unc}: if we throw away the pixels the model is least sure
+about, the vegetation index of the remaining pixels gets steadily more accurate, and keeping the
+most confident half cuts the NDVI error by 26\,\%. One caution: the calibration learned on real
+clouds made the synthetic-cloud calibration worse, so it does not carry over between cloud types.
+
+\begin{table}[t]
+\centering
+\caption{Keeping only the pixels the model is most confident about (real clouds).}
+\label{tab:unc}
+\begin{tabular}{lcccc}
+\toprule
+Share of pixels kept & 100\,\% & 90\,\% & 75\,\% & 50\,\% \\
+\midrule
+NDVI error & 0.182 & 0.171 & 0.158 & 0.134 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{Discussion and Limitations}
-\textbf{Training data.} Our models see 2,434 spring patches, while the published checkpoints were
-trained on the full four-season SEN12MS-CR training split. Their lead is concentrated on partly
-cloudy patches, which require learning how to combine visible pixels with SAR across a date gap.
-Whether this gap is due to data or to architecture cannot be decided from these runs; retraining
-on a larger part of the spring training split, which has 24,378 patches in total, is under way.
+\textbf{More data is the obvious next step.} Our models learned from 2,434 patches; the published
+models from the whole dataset. Their advantage is concentrated on partly cloudy images, which is
+where more examples should help most. We are now retraining on a much larger part of the spring
+training data (which has 24,378 patches in total) to find out whether the gap is about data or
+about design.
 
-\textbf{Band-group attention.} At this data scale C1 lowers PSNR and does not help the bands it
-targets. The additional per-group parameters may need more data, or the grouping may simply not
-be a useful inductive bias for this task; we do not claim C1 as a contribution on the basis of
-these results.
+\textbf{Band groups did not work, for now.} Splitting the bands into branches made results slightly
+worse and did not help the targeted bands. It may need more data to pay off, or it may simply not
+be a useful idea for this task; we do not claim it as a contribution based on these results.
 
-\textbf{Statistical caveats.} Each configuration is trained with a single seed, so the confidence
-intervals cover variation over test images, not over training runs; differences of a few tenths
-of a dB between our own models may not survive another seed. The spring test split covers only
-five scenes. Real-cloud masks are estimates (s2cloudless plus a shadow heuristic), and the
-validation split ranked the ablations differently from the test split.
-
-\textbf{Comparability.} All numbers are for the spring subset and are not comparable with
-all-season results in the literature, including DB-CR~\cite{hu2025dbcr}.
+\textbf{Things to keep in mind.} Each version was trained only once, so small differences of a few
+tenths of a dB between our own versions might change with another training run. The test set
+comes from only five areas. The cloud outlines on real images are estimates. And all results are
+for spring images only.
 
 \section{Conclusion}
-In a controlled single-step setting on SEN12MS-CR spring, a SAR-conditioned Brownian bridge
-reconstructs all 13 Sentinel-2 bands to within 0.5--0.7\,dB of published models trained on far
-more data and more than 2\,dB above classical gap filling. A separate cloud-mask stage is clearly
-better than end-to-end training, and a learned Stage-1 masker is as good as exact masks. A
-detached Laplace uncertainty head gives a usable reliability signal that substantially lowers
-NDVI error when uncertain pixels are filtered. The NDVI-consistency loss trades a small PSNR loss
-for a small NDVI gain, and band-group attention is not supported at this scale. Next steps are
-training on more of the spring training split, repeating key runs with additional seeds, and
-building an Indian Kharif-season benchmark with downstream crop classification.
+A radar-guided model can rebuild cloud-covered Sentinel-2 images in all 13 bands well, even when
+trained on a small dataset: it comes within 0.5--0.7\,dB of published models trained on far more
+data and is more than 2\,dB better than a classical method. Two of our ideas clearly earn their
+place: finding the clouds first, and giving a confidence map that tells users which pixels to
+trust, which makes the vegetation index 26\,\% more accurate when the unsure half is set aside.
+The vegetation check is a small trade-off, and the band groups did not help at this scale. Next,
+we will train on more data, repeat the key runs, and test the model on real Indian Kharif fields
+with a crop classification task.
 
 \begin{thebibliography}{00}
 \bibitem{ebel2021sen12mscr} P. Ebel, A. Meraner, M. Schmitt, and X. X. Zhu, ``Multisensor data
@@ -458,9 +460,6 @@ Sentinel Hub blog, 2017. [Online]. Available: https://medium.com/sentinel-hub
 \bibitem{zhai2018cloudshadow} H. Zhai, H. Zhang, L. Zhang, and P. Li, ``Cloud/shadow detection
 based on spectral indices for multi/hyperspectral optical remote sensing imagery,'' \textit{ISPRS
 J. Photogramm. Remote Sens.}, vol.~144, pp.~235--253, 2018.
-\bibitem{ilg2018uncertainty} E. Ilg, \"{O}. \c{C}i\c{c}ek, S. Galesso, A. Klein, O. Makansi,
-F. Hutter, and T. Brox, ``Uncertainty estimates and multi-hypotheses networks for optical flow,''
-in \textit{Proc. Eur. Conf. Comput. Vis. (ECCV)}, 2018.
 \end{thebibliography}
 
 \end{document}
