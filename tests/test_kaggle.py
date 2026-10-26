@@ -198,3 +198,8 @@ def test_prepare_shards_then_find_cache_merges_them(tmp_path, capsys):
     assert len(Cache.load(local, "val")) == 2 and len(Cache.load(local, "test")) == 3
     kt.main(["find-cache", "--input", str(inp), "--copy_to", str(local)])
     assert "already merged" in capsys.readouterr().out
+    some = tmp_path / "some"
+    kt.main(["find-cache", "--input", str(inp), "--copy_to", str(some), "--shards", "0", "2"])
+    assert len(Cache.load(some, "train")) == 5  # shards of 3 and 2
+    with pytest.raises(SystemExit, match="not attached"):
+        kt.main(["find-cache", "--input", str(inp), "--copy_to", str(some), "--shards", "7"])

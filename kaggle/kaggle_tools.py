@@ -105,7 +105,7 @@ def copy_cache(src, dst, prefixes=None):
         if out.exists() and out.stat().st_size == f.stat().st_size:
             continue
         tmp = out.with_name(out.name + ".part")
-        # plain reads: Kaggle's notebook-output mounts refuse sendfile (shutil.copyfile) with EROFS
+        # plain reads rather than sendfile (shutil.copyfile), which is the simplest path on FUSE mounts
         with open(f, "rb") as fi, open(tmp, "wb") as fo:
             shutil.copyfileobj(fi, fo, 16 << 20)
         os.replace(tmp, out)
@@ -117,12 +117,18 @@ def copy_cache(src, dst, prefixes=None):
     return str(dst)
 
 
-def find_shards(root="/kaggle/input"):
-    """Training shards (`prepare --shard`) under root, one directory per shard number, in order."""
+def find_shards(root="/kaggle/input", only=None):
+    """Training shards (`prepare --shard`) under root, one directory per shard number, in order.
+    `only` keeps just those shard numbers."""
     found = {}
     for f in sorted(Path(root).rglob(SHARD_FILE), key=lambda p: len(p.parts)) if Path(root).exists() else []:
         if (f.parent / "train_clear.npy").exists():
             found.setdefault(json.loads(f.read_text())["shard"], f.parent)  # same shard attached twice: first wins
+    if only is not None:
+        missing = sorted(set(only) - set(found))
+        if missing:
+            raise SystemExit(f"shards {missing} are not attached (found {sorted(found)})")
+        found = {k: v for k, v in found.items() if k in only}
     return [found[k] for k in sorted(found)]
 
 
@@ -170,7 +176,7 @@ def merge_shards(shards, dst, chunk=128):
 
 
 def cmd_find_cache(args):
-    shards = find_shards(args.input) if args.split == "train" else []
+    shards = find_shards(args.input, args.shards) if args.split == "train" else []
     if shards:
         if not args.copy_to:
             raise SystemExit(f"{len(shards)} training shards found; pass --copy_to to merge them on local disk")
@@ -648,6 +654,9 @@ def main(argv=None):
     f.add_argument("--split", default="train")
     f.add_argument("--copy_to", default=None, help="copy the cache here first (local disk, e.g. /kaggle/temp/cache); "
                                                    "training from /kaggle/input itself is far too slow")
+    f.add_argument("--shards", type=int, nargs="+", default=None,
+                   help="merge only these training shards (default: all attached). Kaggle GPU sessions turned "
+                        "their disk read-only after a 97.5 GB merge of all six")
     r = sub.add_parser("restore")
     r.add_argument("--src", default="/kaggle/input")
     r.add_argument("--dst", default="/kaggle/working/runs")
