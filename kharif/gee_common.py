@@ -9,6 +9,7 @@ Data sources (all public Earth Engine catalog assets):
 """
 import io
 import math
+import time
 from pathlib import Path
 
 import yaml
@@ -102,6 +103,24 @@ def grid_cells(bounds_lonlat, epsg, size_m):
 
 def cell_id(epsg, x, y):
     return f"{epsg.split(':')[1]}_{x}_{y}"
+
+
+BUSY = ("Too many", "429", "rate limit", "Quota exceeded", "quota")
+
+
+def retry(fn, tries=6, wait=10):
+    """Call fn(); when Earth Engine is busy (HTTP 429, "Too many concurrent aggregations") wait
+    wait, 2*wait, 4*wait, ... seconds and try again. Other errors are raised at once."""
+    for k in range(tries):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - only rate limits are retried
+            msg = str(exc)
+            if k == tries - 1 or not any(s in msg for s in BUSY):
+                raise
+            delay = wait * 2 ** k
+            print(f"    [.] Earth Engine busy ({msg[:60]}); retrying in {delay}s", flush=True)
+            time.sleep(delay)
 
 
 def cell_rect(ee, epsg, x, y, size_m):

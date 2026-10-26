@@ -41,7 +41,7 @@ def main(argv=None):
                     "tile": img.get("MGRS_TILE"), "aoi_cloud": frac.get("prob"),
                     "aoi_coverage": cover.get("B2"), "granule_cloud": img.get("CLOUDY_PIXEL_PERCENTAGE")})
 
-            feats = ee.FeatureCollection(col.map(stats)).getInfo()["features"]
+            feats = g.retry(lambda: ee.FeatureCollection(col.map(stats)).getInfo())["features"]
             n = {"clear": 0, "partly": 0, "cloudy": 0}
             for f in feats:
                 p = f["properties"]

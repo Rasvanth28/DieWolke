@@ -92,7 +92,7 @@ def main(argv=None):
                 continue
             img, cloud, shadow, lc = scene_image(ee, sc["id"], cfg)
             try:
-                stats = score_cells(ee, geoms[aoi], epsg, cells, img, cloud, shadow, lc, size_m)
+                stats = g.retry(lambda: score_cells(ee, geoms[aoi], epsg, cells, img, cloud, shadow, lc, size_m))
             except Exception as exc:  # noqa: BLE001 - a bad scene should not stop the export
                 print(f"  [!] {sc['id']}: {exc}")
                 continue
@@ -109,8 +109,9 @@ def main(argv=None):
                 continue
             s1col = g.nearest_s1(ee, geoms[aoi], sc["date"], cfg["s1_max_days"])
             first = s1col.first()
-            s1_info = ee.Dictionary({"id": first.get("system:index"), "date": first.date().format("YYYY-MM-dd")}).getInfo() \
-                if s1col.size().getInfo() else None
+            s1_info = g.retry(lambda: ee.Dictionary({"id": first.get("system:index"),
+                                                     "date": first.date().format("YYYY-MM-dd")}).getInfo()
+                              if s1col.size().getInfo() else None)
             if s1_info is None:
                 print(f"    [!] no Sentinel-1 within {cfg['s1_max_days']} days; skipped")
                 continue
@@ -131,8 +132,8 @@ def main(argv=None):
         key, role, aoi, sc, s1_info, s, epsg, s2, s1 = job
         base = raw / key
         try:
-            g.write_bytes(f"{base}_s2.tif", g.compute_pixels(ee, s2, epsg, s["x"], s["y"]))
-            g.write_bytes(f"{base}_s1.tif", g.compute_pixels(ee, s1, epsg, s["x"], s["y"]))
+            g.write_bytes(f"{base}_s2.tif", g.retry(lambda: g.compute_pixels(ee, s2, epsg, s["x"], s["y"])))
+            g.write_bytes(f"{base}_s1.tif", g.retry(lambda: g.compute_pixels(ee, s1, epsg, s["x"], s["y"])))
         except Exception as exc:  # noqa: BLE001
             return f"[!] {key}: {exc}"
         row = {"key": key, "role": role, "aoi": aoi, "s2_id": sc["id"], "date": sc["date"],

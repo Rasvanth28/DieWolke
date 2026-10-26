@@ -157,6 +157,22 @@ def test_kharif_benchmark_and_crop_classification(tmp_path):
     assert res["results"]["gt"]["all"]["oa"] >= res["results"]["cloudy"]["all"]["oa"] - 0.05
 
 
+def test_gee_retry_waits_on_rate_limits_only(monkeypatch):
+    import gee_common as g
+    import pytest
+    monkeypatch.setattr(g.time, "sleep", lambda s: None)
+    calls = []
+
+    def busy_twice():
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("Too many concurrent aggregations.")
+        return "ok"
+    assert g.retry(busy_twice) == "ok" and len(calls) == 3
+    with pytest.raises(ValueError):
+        g.retry(lambda: (_ for _ in ()).throw(ValueError("bad band")))  # not a rate limit: raised at once
+
+
 def test_grid_helpers():
     import gee_common as g
     assert g.utm_epsg(75.85, 30.9) == "EPSG:32643"
