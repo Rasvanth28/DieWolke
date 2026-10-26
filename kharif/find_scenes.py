@@ -14,6 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gee_common as g  # noqa: E402
 
+CHUNK = 10  # scenes per Earth Engine request
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -41,7 +43,18 @@ def main(argv=None):
                     "tile": img.get("MGRS_TILE"), "aoi_cloud": frac.get("prob"),
                     "aoi_coverage": cover.get("B2"), "granule_cloud": img.get("CLOUDY_PIXEL_PERCENTAGE")})
 
-            feats = g.retry(lambda: ee.FeatureCollection(col.map(stats)).getInfo())["features"]
+            # batches of CHUNK scenes: one request over all scenes of a large district (Raipur)
+            # exceeded Earth Engine's limit on concurrent aggregations
+            feats = []
+            try:
+                n_img = g.retry(lambda: col.size().getInfo())
+                imgs = col.toList(max(n_img, 1))
+                for i in range(0, n_img, CHUNK):
+                    part = ee.FeatureCollection(ee.ImageCollection(imgs.slice(i, i + CHUNK)).map(stats))
+                    feats += g.retry(lambda: part.getInfo())["features"]
+            except Exception as exc:  # noqa: BLE001 - one district should not stop the others
+                print(f"[!] {aoi['name']} {year}: skipped ({str(exc)[:80]})", flush=True)
+                continue
             n = {"clear": 0, "partly": 0, "cloudy": 0}
             for f in feats:
                 p = f["properties"]
