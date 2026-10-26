@@ -105,7 +105,9 @@ def copy_cache(src, dst, prefixes=None):
         if out.exists() and out.stat().st_size == f.stat().st_size:
             continue
         tmp = out.with_name(out.name + ".part")
-        shutil.copyfile(f, tmp)
+        # plain reads: Kaggle's notebook-output mounts refuse sendfile (shutil.copyfile) with EROFS
+        with open(f, "rb") as fi, open(tmp, "wb") as fo:
+            shutil.copyfileobj(fi, fo, 16 << 20)
         os.replace(tmp, out)
     if need:
         print(f"[+] copied {_gb(need)} of the cache to {dst} in {time.time() - t0:.0f}s "
