@@ -1,0 +1,13 @@
+# Colab already has torch, numpy, scipy, matplotlib, scikit-learn and xgboost.
+torch>=2.1
+numpy
+scipy
+pyyaml
+rasterio
+matplotlib
+scikit-learn
+s2cloudless
+xgboost>=2.0
+earthengine-api
+pyproj
+pytest

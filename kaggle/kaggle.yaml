@@ -1,0 +1,17 @@
+# Kaggle overlay: merged over any run config (configs/*.yaml) by kaggle/kaggle_tools.py and by
+#   python -m diewolke.train --config configs/full.yaml --overlay kaggle/kaggle.yaml
+# Paths follow the notebooks in this folder. data.cache is replaced at run time by the cache
+# found under /kaggle/input (kaggle_tools.py find-cache), unless you pass --cache.
+
+data:
+  root: /kaggle/temp/sen12ms_cr          # only used when building the cache on Kaggle
+  cache: /kaggle/input/diewolke-cache    # read-only Kaggle dataset holding train/val/test caches
+
+train:
+  out_dir: /kaggle/working/runs          # saved with the notebook version (about 20 GB, user-reported)
+  precision: fp16                        # T4 and P100 have no bf16
+  tf32: false                            # pre-Ampere GPUs; harmless either way
+  compile: false                         # turn on only if scripts/benchmark_speed.py shows it helps
+  workers: 2                             # Kaggle VMs have few CPU cores; kaggle_tools.py sets this per GPU
+  max_minutes: 680                       # sessions end at 12 h; kaggle_tools.py lowers this to the time left
+  ckpt_every: 500

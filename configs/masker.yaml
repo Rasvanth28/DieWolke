@@ -1,0 +1,21 @@
+# Stage 1 cloud/shadow masker. Trained on synthetic clouds, where the mask is exact
+# (cloud + cast shadow); switch data.mode to mixed to also learn from s2cloudless labels.
+base: base.yaml
+name: masker
+data:
+  mode: synthetic
+  val_mode: synthetic
+  max_target_cloud: 0.01
+model:
+  type: masker
+  base: 32
+  depth: 4
+loss:
+  dice: 0.5
+train:
+  steps: 15000
+  batch: 16
+  lr: 3.0e-4
+  warmup: 300
+  ema: 0.0
+  val_every: 1000

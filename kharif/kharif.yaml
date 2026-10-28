@@ -1,0 +1,31 @@
+# Indian Kharif monsoon benchmark (contribution C4): where and when to look.
+# Used by find_scenes.py, export_patches.py and build_benchmark.py.
+
+project: YOUR-EARTH-ENGINE-PROJECT     # Google Cloud project registered for Earth Engine
+raw_dir: /content/drive/MyDrive/dieWolke/kharif_raw
+benchmark_dir: /content/drive/MyDrive/dieWolke/kharif_benchmark
+
+years: [2019, 2020, 2021, 2022, 2023]
+season: {start: "07-01", end: "10-31"}   # Kharif: July-October
+
+# Districts from FAO GAUL 2015 level 2 (spellings follow GAUL; find_scenes.py lists close
+# matches when a name is not found). A box can be given instead: {name: x, bbox: [W, S, E, N]}.
+# Paddy-dominated districts first; add the districts Gupta & Verma used once confirmed.
+aois:
+  - {name: ludhiana, state: Punjab, district: Ludhiana}
+  - {name: sangrur, state: Punjab, district: Sangrur}
+  - {name: karnal, state: Haryana, district: Karnal}
+  - {name: raipur, state: Chhattisgarh, district: Raipur}
+  - {name: bardhaman, state: West Bengal, district: Barddhaman}
+
+grid_m: 2560                 # 256 px at 10 m, like SEN12MS-CR patches
+cloud_prob_threshold: 40     # s2cloudless probability (%) counted as cloud
+scene_max_cloud: 0.7         # scenes with AOI cloud fraction above this are not searched for clear patches
+clear_max_cloud: 0.005       # max cloud + shadow fraction of a "clear" patch
+donor_cloud: [0.1, 0.8]      # cloud fraction range of a cloud-donor patch
+cropland_min: 0.5            # ESA WorldCover cropland share required for a patch
+s1_max_days: 6               # max |S1 date - S2 date|
+max_clear_per_scene: 30
+max_donor_per_scene: 30
+max_scenes_per_aoi_year: 25
+workers: 8                   # parallel Earth Engine downloads

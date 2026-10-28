@@ -1,0 +1,5 @@
+# Ablation: plain all-band attention, stem and head instead of band groups (C1 off).
+base: base.yaml
+name: no_bga
+model:
+  use_bga: false

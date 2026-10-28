@@ -1,0 +1,12 @@
+# DSen2-CR-style residual ResNet baseline with the CARL loss (smaller than the paper's model).
+base: base.yaml
+name: dsen2cr
+model:
+  type: dsen2cr
+  features: 128
+  blocks: 8
+train:
+  steps: 40000
+  batch: 8
+  lr: 1.0e-4
+  ema: 0.0

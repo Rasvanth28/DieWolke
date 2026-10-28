@@ -1,0 +1,5 @@
+# Ablation: no NDVI-consistency loss (C2 off).
+base: base.yaml
+name: no_ndvi
+loss:
+  ndvi: 0.0

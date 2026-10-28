@@ -1,0 +1,7 @@
+# C5 with the real model: no mask at all; the network sees S1 + the raw cloudy image.
+base: base.yaml
+name: end_to_end
+model:
+  mask_source: none
+  use_mask: false
+  cond: cloudy
